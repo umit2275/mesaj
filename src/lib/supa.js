@@ -186,12 +186,13 @@ class Supa {
         /* aşağıda 401 ile anlaşılır */
       }
     }
-    return this.session?.access_token ?? this.key;
+    return this.session?.access_token ?? null;
   }
 
   async request(path, { method = 'GET', body, headers = {}, raw = false, retry = true } = {}) {
     const token = await this._token();
-    const h = { apikey: this.key, Authorization: `Bearer ${token}`, ...headers };
+    // Yeni "publishable" anahtarlar JWT değildir: Authorization yalnızca oturum varken gönderilir
+    const h = { apikey: this.key, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers };
     let payload = body;
     if (body !== undefined && !(body instanceof Blob) && !(body instanceof ArrayBuffer) && typeof body !== 'string') {
       h['Content-Type'] = 'application/json';

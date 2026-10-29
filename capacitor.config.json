@@ -1,0 +1,12 @@
+{
+  "appId": "com.umit.mesaj",
+  "appName": "Mesaj",
+  "webDir": "dist",
+  "android": {
+    "backgroundColor": "#008069",
+    "adjustMarginsForEdgeToEdge": "auto"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

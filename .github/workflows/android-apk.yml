@@ -1,0 +1,75 @@
+# Her push'ta (ya da Actions sekmesinden elle) APK üretir ve
+# "Releases" sayfasına yükler: telefondan doğrudan indirilebilir.
+name: Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write # Release oluşturmak için
+
+concurrency:
+  group: mesaj-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Kodu al
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Java 21 (Capacitor 7 için)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Bağımlılıkları kur
+        run: npm install --no-audit --no-fund
+
+      - name: Testler
+        run: npm test
+
+      - name: Uygulamayı derle
+        run: npx vite build
+
+      - name: Android projesini oluştur
+        run: |
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+          node scripts/android-setup.mjs
+          npx cap sync android
+
+      - name: APK üret
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../Mesaj-${{ github.run_number }}.apk
+
+      - name: Yapıt olarak sakla
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mesaj-apk
+          path: Mesaj-${{ github.run_number }}.apk
+
+      - name: Releases sayfasına yükle
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Mesaj – derleme ${{ github.run_number }}
+          body: |
+            Otomatik derleme (debug APK). Telefona indirip açarak kurun.
+            Commit: ${{ github.sha }}
+          files: Mesaj-${{ github.run_number }}.apk
+          make_latest: true

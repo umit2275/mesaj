@@ -6,6 +6,7 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 
 const Native = registerPlugin('Suhbet');
+const Push = registerPlugin('PushNotifications');
 export const isNative = () => Capacitor.isNativePlatform();
 
 function blobToBase64(blob) {
@@ -33,6 +34,31 @@ export async function saveImageToDevice(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
   return 'download';
+}
+
+/**
+ * Firebase bildirimleri: uygulama kapalı/uykudayken de bildirim gelir.
+ * onToken(token): telefonun bildirim adresi (sunucuya kaydedilir)
+ * onOpen(conversationId): bildirime dokunulunca
+ */
+export async function setupPush({ onToken, onOpen }) {
+  if (!isNative()) return false;
+  try {
+    let st = await Push.checkPermissions();
+    if (st.receive !== 'granted') st = await Push.requestPermissions();
+    if (st.receive !== 'granted') return false;
+    await Push.createChannel({ id: 'mesajlar_zil', name: 'Mesajlar', description: 'Yeni mesaj bildirimleri (zil sesi)', importance: 5, sound: 'chime', vibration: true, visibility: 1 });
+    await Push.addListener('registration', (t) => onToken(t.value));
+    await Push.addListener('registrationError', () => {});
+    await Push.addListener('pushNotificationActionPerformed', (a) => {
+      const id = a?.notification?.data?.conversation_id;
+      if (id) onOpen(id);
+    });
+    await Push.register();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Bildirim izni (Android 13+ sorar) */

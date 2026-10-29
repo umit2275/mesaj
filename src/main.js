@@ -3,7 +3,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createClient } from './lib/supa.js';
 import { h, icon, toast } from './dom.js';
 import { prepareImage } from './image.js';
-import { saveImageToDevice, askNotificationPermission, showNotification, playChime, unlockSound } from './native.js';
+import { saveImageToDevice, askNotificationPermission, showNotification, playChime, unlockSound, setupPush } from './native.js';
 import {
   normalizeUsername, usernameError, passwordError, serverPassword, usernameToEmail, listTime, lastSeenText,
   withDaySeparators, mergeMessages, friendlyError, hhmm, fitSize, AVATARS, avatarAt, randomAvatar, PASSWORD_MAX,
@@ -86,7 +86,16 @@ async function loadMe() {
 function afterLogin() {
   startRealtime();
   startTimers();
-  askNotificationPermission();
+  setupPush({
+    onToken: (tok) => {
+      S.pushToken = tok;
+      S.db.rpc('save_push_token', { tok }).catch(() => {});
+    },
+    onOpen: (id) => { if (S.me) navigate('chat', { id }); },
+  }).then((ok) => {
+    S.pushOn = ok;
+    if (!ok) askNotificationPermission();
+  });
   navigate('chats', {}, { replace: true });
 }
 
@@ -842,7 +851,8 @@ async function notifyIncoming(m) {
   const who = c ? c.other_display_name || c.other_username : 'Yeni mesaj';
   const text = m.image_path ? '📷 Fotoğraf' : m.body || '';
   if (document.hidden) {
-    showNotification(who, text, m.conversation_id);
+    // Firebase açıksa bildirimi sunucu gönderir (çift bildirim olmasın)
+    if (!S.pushOn) showNotification(who, text, m.conversation_id);
     return;
   }
   playChime();
@@ -896,6 +906,8 @@ function renderProfile() {
   });
   const out = h('button', { class: 'btn danger' }, 'Çıkış yap');
   out.onclick = async () => {
+    if (S.pushToken) await S.db.rpc('delete_push_token', { tok: S.pushToken }).catch(() => {});
+    S.pushToken = null;
     stopAll();
     await S.db.signOut();
     S.me = null;

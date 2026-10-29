@@ -69,3 +69,12 @@ const javaDir = join(root, 'android', 'app', 'src', 'main', 'java', 'com', 'umit
 mkdirSync(javaDir, { recursive: true });
 for (const f of ['MainActivity.java', 'SuhbetPlugin.java']) copyFileSync(join(root, 'resources', 'android', f), join(javaDir, f));
 console.log('[android-setup] Suhbet eklentisi eklendi');
+
+// Firebase bildirimleri: google-services.json olmadan bildirim kaydı uygulamayı çökertir
+const gs = join(root, 'resources', 'google-services.json');
+if (!existsSync(gs)) {
+  console.error('[android-setup] resources/google-services.json yok (Firebase). Derleme durduruldu.');
+  process.exit(1);
+}
+copyFileSync(gs, join(root, 'android', 'app', 'google-services.json'));
+console.log('[android-setup] Firebase ayarı (google-services.json) kondu');

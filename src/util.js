@@ -22,10 +22,47 @@ export function usernameError(u) {
   return null;
 }
 
+export const PASSWORD_MAX = 8;
+
+/** Şifre serbest (her karakter olur), en az 1 en fazla 8 karakter */
 export function passwordError(p) {
-  if (!p || p.length < 6) return 'Şifre en az 6 karakter olmalı';
+  const n = [...String(p ?? '')].length;
+  if (!n) return 'Şifre gerekli';
+  if (n > PASSWORD_MAX) return `Şifre en fazla ${PASSWORD_MAX} karakter olabilir`;
   return null;
 }
+
+/**
+ * Sunucu en az 6 karakter istiyor; kullanıcı ise 1-8 karakterlik serbest şifre seçiyor.
+ * Sunucuya giden şifre sabit bir ekle uzatılır (gizlilik değişmez, sadece uzunluk kuralı sağlanır).
+ */
+export const serverPassword = (p) => `${p}#SuhbetEdek!`;
+
+/** Uygulamanın 20 sevimli hayvan profil resmi */
+export const AVATARS = [
+  { e: '🐶', bg: '#ffe0b2', name: 'Köpek' },
+  { e: '🐱', bg: '#fff3c4', name: 'Kedi' },
+  { e: '🐭', bg: '#e8eaf6', name: 'Fare' },
+  { e: '🐹', bg: '#ffe4d6', name: 'Hamster' },
+  { e: '🐰', bg: '#fce4ec', name: 'Tavşan' },
+  { e: '🐻', bg: '#efdccb', name: 'Ayı' },
+  { e: '🐼', bg: '#e0f2f1', name: 'Panda' },
+  { e: '🐨', bg: '#e3e8ee', name: 'Koala' },
+  { e: '🐯', bg: '#ffecb3', name: 'Kaplan' },
+  { e: '🐮', bg: '#f1f8e9', name: 'İnek' },
+  { e: '🐷', bg: '#ffdde4', name: 'Domuzcuk' },
+  { e: '🐸', bg: '#dcf5d0', name: 'Kurbağa' },
+  { e: '🐵', bg: '#f5e1cf', name: 'Maymun' },
+  { e: '🐔', bg: '#fff0e0', name: 'Tavuk' },
+  { e: '🐧', bg: '#dceefb', name: 'Penguen' },
+  { e: '🐤', bg: '#fff7c2', name: 'Civciv' },
+  { e: '🐣', bg: '#fdf1d4', name: 'Yavru civciv' },
+  { e: '🐺', bg: '#e6e9f0', name: 'Kurt' },
+  { e: '🐙', bg: '#f3e5f5', name: 'Ahtapot' },
+  { e: '🐳', bg: '#dff3ff', name: 'Balina' },
+];
+export const avatarAt = (i) => AVATARS[Math.min(AVATARS.length - 1, Math.max(0, i | 0))];
+export const randomAvatar = () => Math.floor(Math.random() * AVATARS.length);
 
 /** Kullanıcı adı ile giriş: Supabase e-posta istediği için içeride sabit bir alan adı kullanılır */
 export const usernameToEmail = (u) => `${u}@${EMAIL_DOMAIN}`;
@@ -133,6 +170,8 @@ export function friendlyError(e) {
   if (low.includes('duplicate key') && low.includes('username')) return 'Bu kullanıcı adı alınmış';
   if (low.includes('failed to fetch') || low.includes('network')) return 'İnternet bağlantısı yok gibi görünüyor';
   if (low.includes('password should be')) return 'Şifre en az 6 karakter olmalı';
+  if (low.includes('does not exist') || low.includes('could not find the function')) return 'Sunucu güncellemesi eksik: Supabase\'de güncelleme SQL\'ini çalıştır';
+  if (low.includes('yalnızca gönderen')) return 'Yalnızca kendi mesajını herkesten silebilirsin';
   if (low.includes('email not confirmed')) return 'Hesap onay bekliyor (Supabase\'de e-posta onayı kapatılmalı)';
   return msg || 'Bir hata oluştu';
 }

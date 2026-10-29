@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeUsername, usernameError, passwordError, usernameToEmail, listTime, dayLabel,
+  normalizeUsername, usernameError, passwordError, serverPassword, AVATARS, avatarAt, usernameToEmail, listTime, dayLabel,
   lastSeenText, fitSize, withDaySeparators, mergeMessages, avatarFor, friendlyError,
 } from '../src/util.js';
 
@@ -13,8 +13,12 @@ test('kullanıcı adı: Türkçe harf ve boşluk sadeleşir, kurallar', () => {
   assert.equal(usernameError('ab'), 'Kullanıcı adı en az 3 harf olmalı');
   assert.equal(usernameError('ali-veli'), 'Yalnızca harf, rakam ve _ kullanılabilir');
   assert.equal(usernameError('ali_2'), null);
-  assert.equal(passwordError('12345'), 'Şifre en az 6 karakter olmalı');
-  assert.equal(passwordError('123456'), null);
+  assert.equal(passwordError(''), 'Şifre gerekli');
+  assert.equal(passwordError('1'), null);
+  assert.equal(passwordError('ş ğ*?.'), null);
+  assert.equal(passwordError('12345678'), null);
+  assert.equal(passwordError('123456789'), 'Şifre en fazla 8 karakter olabilir');
+  assert.ok(serverPassword('1').length >= 6);
   assert.equal(usernameToEmail('ali'), 'ali@mesaj-app.com');
 });
 
@@ -55,4 +59,11 @@ test('avatar ve hata metinleri', () => {
   assert.equal(friendlyError(new Error('Invalid login credentials')), 'Kullanıcı adı ya da şifre yanlış');
   assert.equal(friendlyError(new Error('User already registered')), 'Bu kullanıcı adı alınmış');
   assert.equal(friendlyError(new TypeError('Failed to fetch')), 'İnternet bağlantısı yok gibi görünüyor');
+});
+
+test('20 farklı hayvan profil resmi', () => {
+  assert.equal(AVATARS.length, 20);
+  assert.equal(new Set(AVATARS.map((a) => a.e)).size, 20);
+  assert.equal(avatarAt(99).e, AVATARS[19].e);
+  assert.equal(avatarAt(-3).e, AVATARS[0].e);
 });

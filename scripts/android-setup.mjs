@@ -31,6 +31,15 @@ const setAttr = (name, value) => {
 setAttr('screenOrientation', 'portrait');
 setAttr('windowSoftInputMode', 'adjustResize');
 xml = xml.replace(m[0], tag);
+// İzinler: bildirim (Android 13+), eski telefonlarda galeriye yazma (Android 9 ve öncesi)
+const perms = [
+  '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+  '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />',
+];
+for (const p of perms) {
+  const name = p.match(/android:name="([^"]+)"/)[1];
+  if (!xml.includes(`"${name}"`)) xml = xml.replace('</manifest>', `    ${p}\n</manifest>`);
+}
 writeFileSync(manifestPath, xml);
 console.log('[android-setup] manifest: dikey ekran, klavyede yeniden boyutlanma');
 
@@ -44,3 +53,19 @@ for (const d of ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi']) {
   rmSync(join(dir, 'ic_launcher_foreground.png'), { force: true });
 }
 console.log('[android-setup] uygulama simgesi kondu');
+
+// Bildirim çubuğu simgesi ve zil sesi
+for (const d of ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi']) {
+  const dir = join(res, `drawable-${d}`);
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(join(root, 'resources', `ic_stat_suhbet_${d}.png`), join(dir, 'ic_stat_suhbet.png'));
+}
+mkdirSync(join(res, 'raw'), { recursive: true });
+copyFileSync(join(root, 'resources', 'chime.wav'), join(res, 'raw', 'chime.wav'));
+console.log('[android-setup] bildirim simgesi ve zil sesi kondu');
+
+// Uygulamanın kendi eklentisi (galeriye kaydet, bildirim) ve onu kaydeden MainActivity
+const javaDir = join(root, 'android', 'app', 'src', 'main', 'java', 'com', 'umit', 'mesaj');
+mkdirSync(javaDir, { recursive: true });
+for (const f of ['MainActivity.java', 'SuhbetPlugin.java']) copyFileSync(join(root, 'resources', 'android', f), join(javaDir, f));
+console.log('[android-setup] Suhbet eklentisi eklendi');

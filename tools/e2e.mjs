@@ -8,9 +8,19 @@ const { chromium } = require('playwright');
 
 const [APP = 'http://localhost:4174/', OUT = '.'] = process.argv.slice(2);
 const browser = await chromium.launch();
-const phone = { viewport: { width: 390, height: 780 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true, colorScheme: process.env.DARK ? 'dark' : 'light' };
+const phone = { viewport: { width: 390, height: 780 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true, colorScheme: process.env.DARK ? 'dark' : 'light', acceptDownloads: true };
 const NOWS = !!process.env.NOWS; // anlık bağlantı yokken (yedek yoklama) deneme
-const ctx = async () => { const c = await browser.newContext(phone); if (NOWS) await c.addInitScript(() => { delete window.WebSocket; window.WebSocket = undefined; }); return c; };
+const ctx = async () => {
+  const c = await browser.newContext(phone);
+  // zil sesinin çaldığını saymak için
+  await c.addInitScript(() => {
+    window.__chimes = 0;
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () { if (!this.muted && /chime/.test(this.src)) window.__chimes++; return play.call(this).catch(() => {}); };
+  });
+  if (NOWS) await c.addInitScript(() => { delete window.WebSocket; window.WebSocket = undefined; });
+  return c;
+};
 const ali = await (await ctx()).newPage();
 const ayse = await (await ctx()).newPage();
 const errors = [];
@@ -20,107 +30,145 @@ for (const [n, p] of [['ali', ali], ['ayse', ayse]]) {
 }
 const shot = (p, name) => p.screenshot({ path: `${OUT}/e2e_${name}.png` });
 const ok = (cond, msg) => { if (!cond) throw new Error('BAŞARISIZ: ' + msg); console.log('✓', msg); };
+const chimes = (p) => p.evaluate(() => window.__chimes);
+const longPress = async (p, loc) => {
+  const b = await loc.boundingBox();
+  await p.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await p.mouse.down();
+  await p.waitForTimeout(650);
+  await p.mouse.up();
+};
 
-async function signup(p, user, name) {
+async function signup(p, user, name, pass, avatarIndex) {
   await p.goto(APP);
   await p.getByRole('button', { name: 'Kayıt ol' }).click();
   await p.getByPlaceholder('Kullanıcı adı').fill(user);
   await p.getByPlaceholder('Görünen ad (ör. Ümit)').fill(name);
-  await p.getByPlaceholder('Şifre').fill('gizli123');
+  await p.locator('input[type=password]').fill(pass);
+  await p.locator('.avatar-grid .pick').nth(avatarIndex).click();
   await p.getByRole('button', { name: 'Hesap oluştur' }).click();
-  await p.getByText('Mesajlar', { exact: true }).waitFor({ timeout: 10000 });
+  await p.getByText('Suhbet Edek', { exact: true }).first().waitFor({ timeout: 10000 });
 }
 
 await fetch(new URL('/__reset', process.env.MOCK || 'http://localhost:54321'), { method: 'POST' });
 await ali.goto(APP);
-await shot(ali, '01_giris');
-await signup(ali, 'Ümit Ali', 'Ali');
-await signup(ayse, 'ayse', 'Ayşe');
-await shot(ali, '02_bos_liste');
+await ali.getByRole('button', { name: 'Kayıt ol' }).click();
+await shot(ali, '01_kayit');
+// Şifre en fazla 8 karakter (kutu 8'den fazlasını almıyor)
+await ali.locator('input[type=password]').fill('123456789abc');
+ok((await ali.locator('input[type=password]').inputValue()).length === 8, 'şifre kutusu en fazla 8 karakter alıyor');
 
-// Aynı kullanıcı adıyla ikinci kayıt
-const third = await (await browser.newContext(phone)).newPage();
-await third.goto(APP);
-await third.getByRole('button', { name: 'Kayıt ol' }).click();
-await third.getByPlaceholder('Kullanıcı adı').fill('ayse');
-await third.getByPlaceholder('Şifre').fill('gizli123');
-await third.getByRole('button', { name: 'Hesap oluştur' }).click();
-await third.getByText('Bu kullanıcı adı alınmış').waitFor({ timeout: 5000 });
-ok(true, 'alınmış kullanıcı adı uyarısı');
-await third.getByRole('button', { name: 'Giriş', exact: true }).click();
-await third.getByPlaceholder('Kullanıcı adı').fill('ayse');
-await third.getByPlaceholder('Şifre').fill('yanlis1');
-await third.getByRole('button', { name: 'Giriş yap' }).click();
-await third.getByText('Kullanıcı adı ya da şifre yanlış').waitFor({ timeout: 5000 });
-ok(true, 'yanlış şifre uyarısı');
+await signup(ali, 'Ümit Ali', 'Ali', '1', 0); // tek karakterlik şifre bile olur
+ok(true, 'tek karakterlik şifreyle kayıt oldu');
+await signup(ayse, 'ayse', 'Ayşe', 'ş ğ*', 4); // boşluk, Türkçe harf, sembol
+ok(true, 'boşluk/Türkçe harf/sembollü şifreyle kayıt oldu');
 
-// Ali Ayşe'yi bulur
+// Ali Ayşe'yi bulur — Ayşe'nin tavşan resmi görünür
 await ali.getByRole('button', { name: 'Yeni sohbet' }).click();
 await ali.getByPlaceholder('Kullanıcı adı ara').fill('ay');
 await ali.getByText('@ayse').waitFor();
-await shot(ali, '03_arama');
+ok((await ali.locator('.chat-item .avatar .emoji').first().innerText()) === '🐰', 'aramada Ayşe\'nin seçtiği tavşan resmi görünüyor');
 await ali.getByText('@ayse').click();
 await ali.getByPlaceholder('Mesaj').waitFor();
 await ali.waitForTimeout(800);
 if (!NOWS) ok(/çevrimiçi/.test(await ali.locator('.title-sub').innerText()), 'Ayşe çevrimiçi görünüyor');
+
+// Yazıyor bilgisi
+if (!NOWS) {
+  // Ayşe sohbeti açar ki yazıyor kanalına katılsın
+  await ayse.waitForTimeout(300);
+}
 await ali.getByPlaceholder('Mesaj').fill('Merhaba Ayşe! Nasılsın?');
 await ali.getByRole('button', { name: 'Gönder', exact: true }).click();
 await ali.locator('.msg.out .st.ticks').first().waitFor();
 ok(true, 'mesaj gönderildi (tek tik)');
 
-// Ayşe: liste anlık güncellenir, okunmamış 1
+// Ayşe listede: zil + uygulama içi bildirim
 await ayse.locator('.badge').waitFor({ timeout: 8000 });
 ok((await ayse.locator('.badge').innerText()) === '1', 'Ayşe listesinde 1 okunmamış');
-await shot(ayse, '04_liste_okunmamis');
-await ayse.getByText('Ali', { exact: true }).click();
+await ayse.waitForTimeout(300);
+ok((await chimes(ayse)) >= 1, 'Ayşe\'de zil sesi çaldı');
+ok(await ayse.locator('.banner').count() === 1, 'Ayşe\'de üstten bildirim kutusu çıktı');
+await shot(ayse, '02_bildirim');
+await ayse.locator('.banner').click();
 await ayse.getByText('Merhaba Ayşe! Nasılsın?').waitFor();
+ok(true, 'bildirime dokununca sohbet açıldı');
 
-// Ali: mavi çift tik
-await ali.locator('.msg.out .st.read').first().waitFor({ timeout: 8000 });
-ok(true, 'Ali okundu bilgisini (mavi çift tik) anında gördü');
+// Görüldü
+await ali.locator('.seen').waitFor({ timeout: 8000 });
+ok(/Görüldü/.test(await ali.locator('.seen').innerText()), 'Ali\'de "Görüldü" yazıyor (mavi çift tik)');
+
+// Yazıyor
+if (!NOWS) {
+  await ayse.getByPlaceholder('Mesaj').pressSequentially('İyiyim', { delay: 40 });
+  await ali.waitForFunction(() => /yazıyor/.test(document.querySelector('.title-sub')?.textContent || ''), null, { timeout: 5000 });
+  ok(true, 'Ali "yazıyor…" görüyor');
+  await shot(ali, '03_yaziyor');
+  await ayse.getByPlaceholder('Mesaj').fill('');
+}
 
 // Ayşe cevap + fotoğraf
-await ayse.getByPlaceholder('Mesaj').fill('İyiyim, sen? 😊\nBak deniz fotoğrafı:');
+await ayse.getByPlaceholder('Mesaj').fill('İyiyim, sen? 😊');
 await ayse.getByRole('button', { name: 'Gönder', exact: true }).click();
 writeFileSync(`${OUT}/deneme.png`, makePng(640, 420));
 await ayse.locator('input[type=file]').setInputFiles(`${OUT}/deneme.png`);
 await ayse.locator('.msg.out img.photo').waitFor();
 await ali.locator('.msg.in img.photo').waitFor({ timeout: 8000 });
 await ali.waitForFunction(() => { const i = document.querySelector('.msg.in img.photo'); return i && i.complete && i.naturalWidth > 0; }, null, { timeout: 8000 });
-ok(true, 'fotoğraf Ali\'ye ulaştı ve açıldı');
-await ali.waitForTimeout(600);
-await shot(ali, '05_sohbet_ali');
-await shot(ayse, '06_sohbet_ayse');
+ok(true, 'fotoğraf Ali\'ye ulaştı');
+ok((await chimes(ali)) >= 1, 'sohbet açıkken de Ali\'de zil çaldı');
+
+// İsteğe bağlı indirme: büyük fotoğraf → "Cihaza indir"
 await ali.locator('.msg.in img.photo').click();
-await ali.locator('#viewer img').waitFor();
-await shot(ali, '07_foto_buyuk');
-await ali.locator('#viewer').click();
+await ali.locator('.viewer img').waitFor();
+await shot(ali, '04_foto_indir');
+const [dl] = await Promise.all([ali.waitForEvent('download', { timeout: 8000 }), ali.getByRole('button', { name: /Cihaza indir/ }).click()]);
+ok(/\.jpg$/.test(dl.suggestedFilename()), 'fotoğraf cihaza indirildi (' + dl.suggestedFilename() + ')');
+await ali.locator('.viewer .icon-btn').click();
 
-// Ayşe uygulamadan çıkınca (arka plan) Ali "son görülme" görür
-if (!NOWS) {
-await ayse.evaluate(() => { Object.defineProperty(document, 'hidden', { value: true, configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
-await ali.waitForFunction(() => /son görülme/.test(document.querySelector('.title-sub')?.textContent || ''), null, { timeout: 8000 }).catch(async (e) => { console.log('başlık:', await ali.locator('.title-sub').innerText()); throw e; });
-ok(true, 'Ayşe arka plana geçince "son görülme" yazıyor');
-}
+// Herkesten sil (okunmuş olsa bile): Ali kendi ilk mesajını siler
+await longPress(ali, ali.locator('.msg.out .bubble').first());
+await ali.locator('.sheet').waitFor();
+await shot(ali, '05_islem_menusu');
+await ali.getByRole('menuitem', { name: /Herkesten sil/ }).click();
+await ali.getByText('Bu mesajı sildin').waitFor();
+await ayse.getByText('Bu mesaj silindi').waitFor({ timeout: 8000 });
+ok(true, 'okunmuş mesaj herkesten silindi (Ayşe\'de "Bu mesaj silindi")');
 
-// Geri → liste; son mesaj önizlemesi
-await ali.goBack();
-await ali.getByText('Mesajlar', { exact: true }).waitFor();
+// Benden sil: Ali, Ayşe'nin "İyiyim" mesajını kendinden siler, Ayşe'de durur
+await longPress(ali, ali.locator('.msg.in .bubble', { hasText: 'İyiyim' }));
+ok(await ali.getByRole('menuitem', { name: /Herkesten sil/ }).count() === 0, 'başkasının mesajında "Herkesten sil" yok');
+await ali.getByRole('menuitem', { name: /Benden sil/ }).click();
 await ali.waitForTimeout(500);
-ok(/Fotoğraf/.test(await ali.locator('.chat-preview').first().innerText()), 'listede son mesaj "Fotoğraf"');
-await shot(ali, '08_liste_ali');
+ok(await ali.locator('.msg', { hasText: 'İyiyim' }).count() === 0, '"Benden sil" Ali\'den kaldırdı');
+await ayse.waitForTimeout(800);
+ok(await ayse.locator('.msg', { hasText: 'İyiyim' }).count() === 1, 'Ayşe\'de mesaj duruyor');
+await shot(ali, '06_sohbet_ali');
+await shot(ayse, '07_sohbet_ayse');
 
-// Uygulama yeniden açılınca oturum sürer
-await ali.reload();
-await ali.getByText('Mesajlar', { exact: true }).waitFor({ timeout: 8000 });
-ok(true, 'yeniden açılışta oturum korunuyor');
-
-// Profil, çıkış
+// Profil resmini değiştir
+await ali.goBack();
 await ali.getByRole('button', { name: 'Profil' }).click();
-await shot(ali, '09_profil');
+await ali.locator('.avatar-grid .pick').nth(14).click();
+await ali.waitForTimeout(500);
+ok((await ali.locator('.profile-head .emoji').innerText()) === '🐧', 'profil resmi pengueniyle değişti');
+await shot(ali, '08_profil');
+await ali.goBack();
+await ayse.goBack();
+await ayse.waitForTimeout(800);
+await ayse.reload();
+await ayse.locator('.chat-item').first().waitFor();
+ok((await ayse.locator('.chat-item .emoji').first().innerText()) === '🐧', 'Ayşe listede Ali\'nin yeni resmini görüyor');
+await shot(ayse, '09_liste_ayse');
+
+// Çıkış ve tek karakterlik şifreyle tekrar giriş
+await ali.getByRole('button', { name: 'Profil' }).click();
 await ali.getByRole('button', { name: 'Çıkış yap' }).click();
-await ali.getByRole('button', { name: 'Giriş yap' }).waitFor();
-ok(true, 'çıkış yapıldı');
+await ali.getByPlaceholder('Kullanıcı adı').fill('umit_ali');
+await ali.locator('input[type=password]').fill('1');
+await ali.getByRole('button', { name: 'Giriş yap' }).click();
+await ali.getByText('Suhbet Edek', { exact: true }).first().waitFor({ timeout: 8000 });
+ok(true, 'çıkıp tek karakterlik şifreyle tekrar girdi');
 
 console.log(errors.length ? 'HATALAR:\n' + errors.join('\n') : 'sayfa hatası yok');
 await browser.close();

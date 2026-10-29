@@ -3,11 +3,13 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createClient } from './lib/supa.js';
 import { h, icon, toast } from './dom.js';
 import { prepareImage } from './image.js';
+import { saveImageToDevice, askNotificationPermission, showNotification, playChime, unlockSound } from './native.js';
 import {
-  normalizeUsername, usernameError, passwordError, usernameToEmail, listTime, lastSeenText,
-  withDaySeparators, mergeMessages, avatarFor, friendlyError, hhmm, fitSize,
+  normalizeUsername, usernameError, passwordError, serverPassword, usernameToEmail, listTime, lastSeenText,
+  withDaySeparators, mergeMessages, friendlyError, hhmm, fitSize, AVATARS, avatarAt, randomAvatar, PASSWORD_MAX,
 } from './util.js';
 
+const APP_NAME = 'Suhbet Edek';
 const app = document.getElementById('app');
 const PAGE = 40; // bir seferde yüklenen mesaj sayısı
 
@@ -20,18 +22,20 @@ const S = {
   screen: null, // { name, params }
   chats: [],
   online: new Set(),
-  conv: null, // açık sohbet: { id, other, messages, hasMore, loadingOlder }
+  conv: null, // açık sohbet
   urls: new Map(), // foto yolu → { url, exp }
   dbChannel: null,
   presence: null,
   rtJoined: false,
   timers: [],
+  seenIds: new Set(), // bildirimi yapılmış mesajlar
 };
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   renderSetupNeeded();
 } else {
   S.db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  unlockSound();
   start();
 }
 
@@ -39,7 +43,7 @@ function renderSetupNeeded() {
   app.replaceChildren(
     h('div', { class: 'center-page' },
       h('div', { class: 'logo' }, '💬'),
-      h('h1', {}, 'Mesaj'),
+      h('h1', {}, APP_NAME),
       h('p', { class: 'muted' }, 'Sunucu bilgileri henüz girilmemiş (src/config.js).'),
     ),
   );
@@ -72,8 +76,9 @@ async function loadMe() {
       await S.db.signOut();
       return false;
     }
-    // ağ yok: eldeki oturumla devam (profil bilinmiyor)
-    S.me = { id: S.db.user.id, username: S.db.user.user_metadata?.username || '', display_name: S.db.user.user_metadata?.display_name || '' };
+    // ağ yok: eldeki oturumla devam
+    const md = S.db.user.user_metadata || {};
+    S.me = { id: S.db.user.id, username: md.username || '', display_name: md.display_name || '', avatar: +md.avatar || 0 };
     return true;
   }
 }
@@ -81,6 +86,7 @@ async function loadMe() {
 function afterLogin() {
   startRealtime();
   startTimers();
+  askNotificationPermission();
   navigate('chats', {}, { replace: true });
 }
 
@@ -95,6 +101,11 @@ function navigate(name, params = {}, { replace = false } = {}) {
 }
 
 window.addEventListener('popstate', (e) => {
+  // Açık bir pencere (işlem menüsü / büyük fotoğraf) varsa geri tuşu önce onu kapatır
+  if (closeOverlay()) {
+    history.pushState(S.screen, '');
+    return;
+  }
   const st = e.state;
   if (!st) return;
   if (!S.db?.user && st.name !== 'auth') {
@@ -105,10 +116,17 @@ window.addEventListener('popstate', (e) => {
   show(st);
 });
 
+function closeOverlay() {
+  const o = document.querySelector('.overlay');
+  if (!o) return false;
+  o.remove();
+  return true;
+}
+
 function show(st) {
+  if (S.conv && st.name !== 'chat') leaveChat();
   S.screen = st;
-  if (st.name !== 'chat') S.conv = null;
-  document.getElementById('viewer')?.remove();
+  document.querySelectorAll('.overlay').forEach((o) => o.remove());
   switch (st.name) {
     case 'auth': return renderAuth();
     case 'chats': return renderChats();
@@ -120,25 +138,52 @@ function show(st) {
 }
 
 // ------------------------------------------------------------------
+// Profil resimleri (uygulamanın 20 hayvanı)
+// ------------------------------------------------------------------
+function avatar(index, online = false, size = 'md') {
+  const a = avatarAt(index);
+  return h('div', { class: `avatar ${size}`, style: { background: a.bg }, title: a.name },
+    h('span', { class: 'emoji' }, a.e), online ? h('span', { class: 'dot' }) : null);
+}
+
+function avatarPicker(selected, onPick) {
+  const grid = h('div', { class: 'avatar-grid', role: 'listbox', 'aria-label': 'Profil resmi' });
+  const paint = (sel) => {
+    grid.replaceChildren(...AVATARS.map((a, i) => h('button', {
+      type: 'button', class: `pick ${i === sel ? 'on' : ''}`, style: { background: a.bg }, 'aria-label': a.name,
+      'aria-selected': String(i === sel), onclick: () => { paint(i); onPick(i); },
+    }, a.e)));
+  };
+  paint(selected);
+  return grid;
+}
+
+// ------------------------------------------------------------------
 // Giriş / kayıt
 // ------------------------------------------------------------------
 function renderAuth() {
   let mode = 'login';
+  let chosen = randomAvatar();
   const err = h('div', { class: 'form-error' });
   const user = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: false, placeholder: 'Kullanıcı adı', maxLength: 20 });
   const name = h('input', { type: 'text', autocomplete: 'nickname', placeholder: 'Görünen ad (ör. Ümit)', maxLength: 40 });
-  const pass = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Şifre' });
+  const pass = h('input', { type: 'password', autocomplete: 'current-password', placeholder: `Şifre (en fazla ${PASSWORD_MAX} karakter)`, maxLength: PASSWORD_MAX });
+  const eye = h('button', { type: 'button', class: 'eye', 'aria-label': 'Şifreyi göster', onclick: () => { pass.type = pass.type === 'password' ? 'text' : 'password'; } }, '👁');
   const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Giriş yap');
-  const nameRow = h('label', { class: 'field hidden' }, name);
+  const signupOnly = h('div', { class: 'signup-only hidden' },
+    h('label', { class: 'field' }, name),
+    h('div', { class: 'pick-title' }, 'Profil resmini seç'),
+    avatarPicker(chosen, (i) => { chosen = i; }),
+  );
   const tabLogin = h('button', { type: 'button', class: 'tab active' }, 'Giriş');
   const tabSignup = h('button', { type: 'button', class: 'tab' }, 'Kayıt ol');
-  const hint = h('p', { class: 'hint hidden' }, 'Kullanıcı adın: küçük harf, rakam ve _ (Türkçe harfler otomatik düzeltilir). Arkadaşların seni bu adla bulur.');
+  const hint = h('p', { class: 'hint hidden' }, `Kullanıcı adı: harf, rakam ve _ (Türkçe harfler otomatik düzeltilir). Şifre serbest, en fazla ${PASSWORD_MAX} karakter.`);
 
   const setMode = (m) => {
     mode = m;
     tabLogin.classList.toggle('active', m === 'login');
     tabSignup.classList.toggle('active', m === 'signup');
-    nameRow.classList.toggle('hidden', m !== 'signup');
+    signupOnly.classList.toggle('hidden', m !== 'signup');
     hint.classList.toggle('hidden', m !== 'signup');
     pass.autocomplete = m === 'signup' ? 'new-password' : 'current-password';
     btn.textContent = m === 'signup' ? 'Hesap oluştur' : 'Giriş yap';
@@ -151,8 +196,8 @@ function renderAuth() {
   const form = h('form', { class: 'auth-form', novalidate: true },
     h('div', { class: 'tabs' }, tabLogin, tabSignup),
     h('label', { class: 'field' }, user),
-    nameRow,
-    h('label', { class: 'field' }, pass),
+    h('label', { class: 'field pass' }, pass, eye),
+    signupOnly,
     hint,
     err,
     btn,
@@ -168,13 +213,21 @@ function renderAuth() {
     }
     btn.disabled = true;
     err.textContent = '';
+    const email = usernameToEmail(u);
     try {
       if (mode === 'signup') {
         const free = await S.db.rpc('username_available', { uname: u });
         if (free === false) throw new Error('Bu kullanıcı adı alınmış');
-        await S.db.signUp(usernameToEmail(u), pass.value, { username: u, display_name: name.value.trim() || u });
+        await S.db.signUp(email, serverPassword(pass.value), { username: u, display_name: name.value.trim() || u, avatar: chosen });
       } else {
-        await S.db.signIn(usernameToEmail(u), pass.value);
+        try {
+          await S.db.signIn(email, serverPassword(pass.value));
+        } catch (ex) {
+          // İlk sürümde açılmış hesaplar: şifre olduğu gibi kaydedilmişti → girip yeni biçime çevir
+          if (pass.value.length < 6 || !/invalid login/i.test(ex.message)) throw ex;
+          await S.db.signIn(email, pass.value);
+          S.db.updatePassword(serverPassword(pass.value)).catch(() => {});
+        }
       }
       if (await loadMe()) afterLogin();
       else throw new Error('Profil bulunamadı');
@@ -187,7 +240,7 @@ function renderAuth() {
 
   app.replaceChildren(
     h('div', { class: 'auth-page' },
-      h('div', { class: 'auth-top' }, h('div', { class: 'logo' }, '💬'), h('h1', {}, 'Mesaj')),
+      h('div', { class: 'auth-top' }, h('div', { class: 'logo' }, '💬'), h('h1', {}, APP_NAME)),
       form,
     ),
   );
@@ -196,34 +249,33 @@ function renderAuth() {
 // ------------------------------------------------------------------
 // Sohbet listesi
 // ------------------------------------------------------------------
-function header(title, { back = false, actions = [], sub = null, onTitle = null } = {}) {
+function header(title, { back = false, actions = [] } = {}) {
   return h('header', { class: 'topbar' },
     back ? h('button', { class: 'icon-btn', 'aria-label': 'Geri', onclick: () => history.back() }, icon('back')) : null,
-    h('div', { class: 'title', onclick: onTitle },
-      h('div', { class: 'title-main' }, title),
-      sub ? h('div', { class: 'title-sub' }, sub) : null,
-    ),
+    h('div', { class: 'title' }, h('div', { class: 'title-main' }, title)),
     ...actions,
   );
 }
 
-function avatar(name, online = false, size = 'md') {
-  const a = avatarFor(name);
-  return h('div', { class: `avatar ${size}`, style: { background: a.color } }, a.initial, online ? h('span', { class: 'dot' }) : null);
-}
-
 function renderChats() {
   const list = h('div', { class: 'chat-list' });
-  const body = h('main', { class: 'scroll' }, list);
+  const me = h('button', { class: 'icon-btn me-btn', 'aria-label': 'Profil', onclick: () => navigate('profile') }, avatar(S.me.avatar, false, 'xs'));
   app.replaceChildren(
     h('div', { class: 'page' },
-      header('Mesajlar', { actions: [h('button', { class: 'icon-btn', 'aria-label': 'Profil', onclick: () => navigate('profile') }, icon('user'))] }),
-      body,
+      header(APP_NAME, { actions: [me] }),
+      h('main', { class: 'scroll' }, list),
       h('button', { class: 'fab', 'aria-label': 'Yeni sohbet', onclick: () => navigate('new') }, icon('plus')),
     ),
   );
   paintChats();
   refreshChats();
+}
+
+function previewOf(c) {
+  if (!c.last_message_id) return [h('span', { class: 'muted' }, 'Sohbet başladı')];
+  if (c.last_deleted) return [h('span', { class: 'muted deleted' }, c.last_sender === S.me.id ? '🚫 Bu mesajı sildin' : '🚫 Bu mesaj silindi')];
+  if (c.last_has_image) return [icon('photo', 'ic sm'), ' Fotoğraf'];
+  return [c.last_body || ''];
 }
 
 function paintChats() {
@@ -237,15 +289,13 @@ function paintChats() {
   }
   list.replaceChildren(...S.chats.map((c) => {
     const name = c.other_display_name || c.other_username;
-    const mine = c.last_sender === S.me.id;
-    let preview = c.last_has_image ? [icon('photo', 'ic sm'), ' Fotoğraf'] : [c.last_body || ''];
-    if (!c.last_message_id) preview = [h('span', { class: 'muted' }, 'Sohbet başladı')];
-    const tick = mine && c.last_message_id ? h('span', { class: `st ticks ${c.last_read_at ? 'read' : ''}` }, icon(c.last_read_at ? 'checks' : 'check', 'ic xs')) : null;
+    const mine = c.last_sender === S.me.id && c.last_message_id && !c.last_deleted;
+    const tick = mine ? h('span', { class: `st ticks ${c.last_read_at ? 'read' : ''}` }, icon(c.last_read_at ? 'checks' : 'check', 'ic xs')) : null;
     return h('button', { class: 'chat-item', onclick: () => navigate('chat', { id: c.conversation_id }) },
-      avatar(name, S.online.has(c.other_id)),
+      avatar(c.other_avatar, S.online.has(c.other_id)),
       h('div', { class: 'chat-mid' },
         h('div', { class: 'chat-row' }, h('span', { class: 'chat-name' }, name), h('span', { class: `chat-time ${c.unread ? 'hl' : ''}` }, listTime(c.last_created_at))),
-        h('div', { class: 'chat-row' }, h('span', { class: 'chat-preview' }, tick, ...preview), c.unread ? h('span', { class: 'badge' }, c.unread > 99 ? '99+' : c.unread) : null),
+        h('div', { class: 'chat-row' }, h('span', { class: 'chat-preview' }, tick, ...previewOf(c)), c.unread ? h('span', { class: 'badge' }, c.unread > 99 ? '99+' : c.unread) : null),
       ),
     );
   }));
@@ -257,6 +307,7 @@ async function refreshChats() {
   chatsBusy = true;
   try {
     S.chats = (await S.db.rpc('my_chats')) || [];
+    S.chatsLoaded = true;
     if (S.screen?.name === 'chats') paintChats();
   } catch (e) {
     if (S.screen?.name === 'chats' && !S.chats.length) toast(friendlyError(e));
@@ -280,14 +331,14 @@ function renderNewChat() {
       return;
     }
     try {
-      const rows = await S.db.select('profiles', `select=id,username,display_name,last_seen&username=ilike.*${encodeURIComponent(q)}*&id=neq.${S.me.id}&order=username&limit=30`);
+      const rows = await S.db.select('profiles', `select=id,username,display_name,avatar,last_seen&username=ilike.*${encodeURIComponent(q)}*&id=neq.${S.me.id}&order=username&limit=30`);
       if (my !== seq) return;
       if (!rows.length) {
         results.replaceChildren(h('div', { class: 'empty muted' }, 'Kimse bulunamadı.'));
         return;
       }
       results.replaceChildren(...rows.map((p) => h('button', { class: 'chat-item', onclick: () => openWith(p) },
-        avatar(p.display_name || p.username, S.online.has(p.id)),
+        avatar(p.avatar, S.online.has(p.id)),
         h('div', { class: 'chat-mid' },
           h('div', { class: 'chat-row' }, h('span', { class: 'chat-name' }, p.display_name || p.username)),
           h('div', { class: 'chat-row' }, h('span', { class: 'chat-preview muted' }, '@' + p.username)),
@@ -321,13 +372,17 @@ async function openWith(p) {
 // ------------------------------------------------------------------
 // Sohbet ekranı
 // ------------------------------------------------------------------
+const hiddenFilter = () => `hidden_by=not.cs.%7B${S.me.id}%7D`;
+
 async function renderChat({ id, other }) {
   const known = S.chats.find((c) => c.conversation_id === id);
-  const o = other || (known && { id: known.other_id, username: known.other_username, display_name: known.other_display_name, last_seen: known.other_last_seen });
-  S.conv = { id, other: o || null, messages: [], hasMore: true, loadingOlder: false, sending: 0 };
+  const o = other || (known && { id: known.other_id, username: known.other_username, display_name: known.other_display_name, avatar: known.other_avatar, last_seen: known.other_last_seen });
+  const conv = { id, other: o || null, messages: [], hasMore: true, loadingOlder: false, typingUntil: 0 };
+  S.conv = conv;
 
   const sub = h('span', { class: 'status' }, '');
   const titleName = h('span', {}, o ? o.display_name || o.username : '…');
+  const headAvatar = h('div', { class: 'head-avatar' }, o ? avatar(o.avatar, false, 'sm') : null);
   const msgs = h('div', { class: 'messages' });
   const scroller = h('main', { class: 'scroll chat-bg' }, h('div', { class: 'older hidden' }, h('div', { class: 'spinner sm' })), msgs);
   const text = h('textarea', { rows: 1, placeholder: 'Mesaj', maxLength: 4000, enterkeyhint: 'send' });
@@ -335,79 +390,103 @@ async function renderChat({ id, other }) {
   const sendBtn = h('button', { class: 'send-btn', 'aria-label': 'Gönder' }, icon('send'));
   const attachBtn = h('button', { class: 'icon-btn attach', 'aria-label': 'Fotoğraf gönder', onclick: () => file.click() }, icon('attach'));
 
-  const head = h('header', { class: 'topbar chat-top' },
-    h('button', { class: 'icon-btn', 'aria-label': 'Geri', onclick: () => history.back() }, icon('back')),
-    h('div', { class: 'head-avatar' }, o ? avatar(o.display_name || o.username, false, 'sm') : null),
-    h('div', { class: 'title' }, h('div', { class: 'title-main' }, titleName), h('div', { class: 'title-sub' }, sub)),
-  );
   app.replaceChildren(
     h('div', { class: 'page chat-page' },
-      head,
+      h('header', { class: 'topbar chat-top' },
+        h('button', { class: 'icon-btn', 'aria-label': 'Geri', onclick: () => history.back() }, icon('back')),
+        headAvatar,
+        h('div', { class: 'title' }, h('div', { class: 'title-main' }, titleName), h('div', { class: 'title-sub' }, sub)),
+      ),
       scroller,
       h('footer', { class: 'composer' }, attachBtn, h('div', { class: 'input-wrap' }, text), sendBtn, file),
     ),
   );
 
-  const conv = S.conv;
-  const paintStatus = () => {
+  conv.paintStatus = () => {
     if (!conv.other) return;
-    sub.textContent = lastSeenText(S.online.has(conv.other.id), conv.other.last_seen);
+    const typing = conv.typingUntil > Date.now();
+    sub.textContent = typing ? 'yazıyor…' : lastSeenText(S.online.has(conv.other.id), conv.other.last_seen);
+    sub.classList.toggle('typing', typing);
   };
-  conv.paintStatus = paintStatus;
   conv.scroller = scroller;
   conv.list = msgs;
 
-  // Karşı tarafı bilmiyorsak (uygulama bu sohbete doğrudan açıldıysa) getir
+  // "Yazıyor" kanalı (kaydedilmeyen anlık yayın)
+  conv.typingCh = S.db.realtime.channel(`typing:${id}`, {});
+  conv.typingCh.onBroadcast('typing', (p) => {
+    if (S.conv !== conv || p.u === S.me.id) return;
+    conv.typingUntil = p.stop ? 0 : Date.now() + 4000;
+    conv.paintStatus();
+    clearTimeout(conv.typingTimer);
+    conv.typingTimer = setTimeout(() => conv.paintStatus(), 4100);
+  });
+  let lastTyping = 0;
+  const sendTyping = (stop = false) => {
+    const now = Date.now();
+    if (!stop && now - lastTyping < 2500) return;
+    lastTyping = stop ? 0 : now;
+    conv.typingCh.send('typing', { u: S.me.id, stop });
+  };
+
+  // Karşı tarafı bilmiyorsak getir
   if (!conv.other) {
     try {
       const rows = await S.db.select('conversations', `id=eq.${id}&select=user_a,user_b`);
       const otherId = rows[0] && (rows[0].user_a === S.me.id ? rows[0].user_b : rows[0].user_a);
-      const ps = otherId ? await S.db.select('profiles', `id=eq.${otherId}&select=id,username,display_name,last_seen`) : [];
+      const ps = otherId ? await S.db.select('profiles', `id=eq.${otherId}&select=id,username,display_name,avatar,last_seen`) : [];
       conv.other = ps[0] || null;
-      if (conv.other) {
+      if (conv.other && S.conv === conv) {
         titleName.textContent = conv.other.display_name || conv.other.username;
-        head.querySelector('.head-avatar').replaceChildren(avatar(conv.other.display_name || conv.other.username, false, 'sm'));
+        headAvatar.replaceChildren(avatar(conv.other.avatar, false, 'sm'));
       }
     } catch {
       /* başlık boş kalır */
     }
   } else {
-    // son görülmeyi tazele
-    S.db.select('profiles', `id=eq.${conv.other.id}&select=last_seen`).then((r) => {
+    S.db.select('profiles', `id=eq.${conv.other.id}&select=last_seen,avatar,display_name`).then((r) => {
       if (r[0] && S.conv === conv) {
-        conv.other.last_seen = r[0].last_seen;
-        paintStatus();
+        Object.assign(conv.other, r[0]);
+        headAvatar.replaceChildren(avatar(conv.other.avatar, false, 'sm'));
+        conv.paintStatus();
       }
     }).catch(() => {});
   }
-  paintStatus();
+  conv.paintStatus();
 
-  // Yazma kutusu: otomatik yükseklik, gönder
   const autosize = () => {
     text.style.height = 'auto';
     text.style.height = Math.min(text.scrollHeight, 140) + 'px';
   };
-  text.addEventListener('input', autosize);
-  const doSend = () => {
+  text.addEventListener('input', () => {
+    autosize();
+    if (text.value.trim()) sendTyping();
+  });
+  sendBtn.onclick = () => {
     const body = text.value.trim();
     if (!body) return;
     text.value = '';
     autosize();
+    sendTyping(true);
     sendText(conv, body);
     text.focus();
   };
-  sendBtn.onclick = doSend;
   file.onchange = () => {
     const f = file.files?.[0];
     file.value = '';
     if (f) sendImage(conv, f);
   };
-
   scroller.addEventListener('scroll', () => {
     if (scroller.scrollTop < 80) loadOlder(conv);
   });
 
   await loadLatest(conv, true);
+}
+
+function leaveChat() {
+  const conv = S.conv;
+  S.conv = null;
+  if (conv?.typingCh) S.db.realtime.removeChannel(conv.typingCh);
+  clearTimeout(conv?.typingTimer);
 }
 
 function isNearBottom(sc) {
@@ -416,9 +495,10 @@ function isNearBottom(sc) {
 
 async function loadLatest(conv, first = false) {
   try {
-    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&select=*&order=id.desc&limit=${PAGE}`);
+    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&${hiddenFilter()}&select=*&order=id.desc&limit=${PAGE}`);
     if (S.conv !== conv) return;
     if (first) conv.hasMore = rows.length === PAGE;
+    for (const r of rows) S.seenIds.add(r.id);
     applyMessages(conv, rows.reverse(), { stick: first });
     markReadSoon(conv);
   } catch (e) {
@@ -426,19 +506,25 @@ async function loadLatest(conv, first = false) {
   }
 }
 
-/** Gelen yeni/okundu bilgisi değişen mesajlar (son id'den sonrası + okunma durumu) */
+/** Yedek yoklama: yeni mesajlar + görünen mesajların okundu/silindi durumu */
 async function pollConversation(conv) {
   const real = conv.messages.filter((m) => !m._tmp);
   const lastId = real.length ? real[real.length - 1].id : 0;
   try {
-    const fresh = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=gt.${lastId}&select=*&order=id.asc&limit=100`);
-    // kendi okunmamış mesajlarımızın okundu bilgisi
-    const unreadMine = real.filter((m) => m.sender_id === S.me.id && !m.read_at).map((m) => m.id);
-    let reads = [];
-    if (unreadMine.length) reads = await S.db.select('messages', `id=in.(${unreadMine.slice(-100).join(',')})&read_at=not.is.null&select=id,read_at`);
+    const fresh = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=gt.${lastId}&${hiddenFilter()}&select=*&order=id.asc&limit=100`);
+    let state = [];
+    if (real.length) state = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=gte.${real[0].id}&id=lte.${lastId}&select=id,read_at,deleted,body,image_path,image_w,image_h,hidden_by&limit=300`);
     if (S.conv !== conv) return;
-    if (fresh.length || reads.length) applyMessages(conv, [...fresh, ...reads]);
-    if (fresh.some((m) => m.sender_id !== S.me.id)) markReadSoon(conv);
+    const changed = state.filter((s) => {
+      const m = conv.messages.find((x) => x.id === s.id);
+      return m && (m.read_at !== s.read_at || m.deleted !== s.deleted || (s.hidden_by || []).includes(S.me.id));
+    });
+    if (fresh.length || changed.length) applyMessages(conv, [...fresh, ...changed]);
+    const incoming = fresh.filter((m) => m.sender_id !== S.me.id);
+    if (incoming.length) {
+      markReadSoon(conv);
+      for (const m of incoming) notifyIncoming(m);
+    }
   } catch {
     /* sonraki turda */
   }
@@ -452,11 +538,12 @@ async function loadOlder(conv) {
   const spin = conv.scroller.querySelector('.older');
   spin.classList.remove('hidden');
   try {
-    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=lt.${real[0].id}&select=*&order=id.desc&limit=${PAGE}`);
+    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=lt.${real[0].id}&${hiddenFilter()}&select=*&order=id.desc&limit=${PAGE}`);
     if (S.conv !== conv) return;
     conv.hasMore = rows.length === PAGE;
+    for (const r of rows) S.seenIds.add(r.id);
     const before = conv.scroller.scrollHeight - conv.scroller.scrollTop;
-    applyMessages(conv, rows.reverse(), { keep: false });
+    applyMessages(conv, rows.reverse());
     conv.scroller.scrollTop = conv.scroller.scrollHeight - before;
   } catch {
     /* tekrar denenir */
@@ -468,14 +555,14 @@ async function loadOlder(conv) {
 
 function applyMessages(conv, rows, { stick = false } = {}) {
   const wasBottom = stick || isNearBottom(conv.scroller);
-  // gerçek satır geldiyse aynı geçici mesajı kaldır
   for (const r of rows) {
     if (r.sender_id === S.me.id) {
       const i = conv.messages.findIndex((m) => m._tmp && m._client === r._client);
       if (i >= 0) conv.messages.splice(i, 1);
     }
   }
-  conv.messages = mergeMessages(conv.messages, rows);
+  const hiddenNow = new Set(rows.filter((r) => (r.hidden_by || []).includes(S.me.id)).map((r) => r.id));
+  conv.messages = mergeMessages(conv.messages, rows.filter((r) => !hiddenNow.has(r.id))).filter((m) => !hiddenNow.has(m.id));
   paintMessages(conv);
   if (wasBottom) conv.scroller.scrollTop = conv.scroller.scrollHeight;
 }
@@ -484,12 +571,19 @@ function paintMessages(conv) {
   const rows = withDaySeparators(conv.messages);
   const nodes = [];
   if (!conv.messages.length) nodes.push(h('div', { class: 'day-sep' }, h('span', {}, 'Bir mesaj yazarak sohbete başla')));
+  // "Görüldü": karşı tarafın okuduğu son mesajımın altında
+  const mineReal = conv.messages.filter((m) => m.sender_id === S.me.id && !m._tmp && !m.deleted);
+  const lastMine = mineReal[mineReal.length - 1];
+  const lastAll = conv.messages[conv.messages.length - 1];
   for (const r of rows) {
     if (r.type === 'day') {
       nodes.push(h('div', { class: 'day-sep' }, h('span', {}, r.label)));
       continue;
     }
     nodes.push(bubble(conv, r.m));
+    if (lastMine && r.m === lastMine && lastMine.read_at && lastAll === lastMine) {
+      nodes.push(h('div', { class: 'seen' }, `Görüldü ${hhmm(new Date(lastMine.read_at))}`));
+    }
   }
   conv.list.replaceChildren(...nodes);
   ensureImageUrls(conv);
@@ -498,29 +592,119 @@ function paintMessages(conv) {
 function bubble(conv, m) {
   const mine = m.sender_id === S.me.id;
   let status = null;
-  if (mine) {
+  if (mine && !m.deleted) {
     if (m._failed) status = h('span', { class: 'st failed', title: 'Gönderilemedi' }, icon('error', 'ic xs'));
     else if (m._tmp) status = h('span', { class: 'st' }, icon('clock', 'ic xs'));
-    else status = h('span', { class: `st ticks ${m.read_at ? 'read' : ''}`, title: m.read_at ? 'Okundu' : 'Gönderildi' }, icon(m.read_at ? 'checks' : 'check', 'ic xs'));
+    else status = h('span', { class: `st ticks ${m.read_at ? 'read' : ''}`, title: m.read_at ? 'Görüldü' : 'Gönderildi' }, icon(m.read_at ? 'checks' : 'check', 'ic xs'));
   }
   const meta = h('span', { class: 'meta' }, hhmm(new Date(m.created_at)), status);
   const parts = [];
-  if (m.image_path || m._localUrl) {
-    const { w, h: hh } = fitSize(m.image_w || 4, m.image_h || 3, 260);
-    const img = h('img', { class: 'photo', alt: 'Fotoğraf', width: w, height: hh, 'data-path': m.image_path || '', style: { aspectRatio: `${m.image_w || 4} / ${m.image_h || 3}` } });
-    const known = m._localUrl || cachedUrl(m.image_path);
-    if (known) img.src = known;
-    img.onclick = () => img.src && openViewer(img.src);
-    parts.push(h('div', { class: 'photo-wrap' }, img));
+  if (m.deleted) {
+    parts.push(h('div', { class: 'text deleted' }, mine ? '🚫 Bu mesajı sildin' : '🚫 Bu mesaj silindi'));
+  } else {
+    if (m.image_path || m._localUrl) {
+      const { w, h: hh } = fitSize(m.image_w || 4, m.image_h || 3, 260);
+      const img = h('img', { class: 'photo', alt: 'Fotoğraf', width: w, height: hh, 'data-path': m.image_path || '', style: { aspectRatio: `${m.image_w || 4} / ${m.image_h || 3}` } });
+      const known = m._localUrl || cachedUrl(m.image_path);
+      if (known) img.src = known;
+      img.onclick = () => img.src && openViewer(img.src, m);
+      parts.push(h('div', { class: 'photo-wrap' }, img));
+    }
+    if (m.body) parts.push(h('div', { class: 'text' }, m.body));
   }
-  if (m.body) parts.push(h('div', { class: 'text' }, m.body));
-  const el = h('div', { class: `msg ${mine ? 'out' : 'in'} ${m.image_path && !m.body ? 'only-photo' : ''}` },
+  const el = h('div', { class: `msg ${mine ? 'out' : 'in'} ${m.image_path && !m.body && !m.deleted ? 'only-photo' : ''}` },
     h('div', { class: 'bubble' }, ...parts, meta));
   if (m._failed) {
     el.classList.add('failed');
     el.onclick = () => retry(conv, m);
+  } else if (!m._tmp) {
+    longPress(el.firstChild, () => openActions(conv, m, el));
   }
   return el;
+}
+
+/** Uzun basma (≈0,45 sn) ya da sağ tık */
+function longPress(el, fn) {
+  let t = null, sx = 0, sy = 0;
+  const cancel = () => { clearTimeout(t); t = null; };
+  el.addEventListener('pointerdown', (e) => {
+    sx = e.clientX; sy = e.clientY;
+    cancel();
+    t = setTimeout(() => { t = null; navigator.vibrate?.(15); fn(); }, 450);
+  });
+  el.addEventListener('pointermove', (e) => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel(); });
+  el.addEventListener('pointerup', cancel);
+  el.addEventListener('pointercancel', cancel);
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); cancel(); fn(); });
+}
+
+// ---- İşlem menüsü: indir, kopyala, benden sil, herkesten sil ----
+function sheet(items) {
+  const box = h('div', { class: 'overlay sheet-bg', onclick: (e) => { if (e.target === box) box.remove(); } },
+    h('div', { class: 'sheet', role: 'menu' },
+      ...items.map((it) => h('button', { class: `sheet-item ${it.danger ? 'danger' : ''}`, role: 'menuitem', onclick: () => { box.remove(); it.run(); } }, it.label)),
+      h('button', { class: 'sheet-item cancel', onclick: () => box.remove() }, 'Vazgeç'),
+    ));
+  document.body.append(box);
+}
+
+function openActions(conv, m, el) {
+  const mine = m.sender_id === S.me.id;
+  const items = [];
+  if (!m.deleted && m.image_path) items.push({ label: '⬇️  Cihaza indir', run: () => downloadPhoto(m) });
+  if (!m.deleted && m.body) items.push({ label: '📋  Kopyala', run: () => copyText(m.body) });
+  items.push({ label: '🗑️  Benden sil', run: () => deleteMessage(conv, m, false) });
+  if (mine && !m.deleted) items.push({ label: '🗑️  Herkesten sil', danger: true, run: () => deleteMessage(conv, m, true) });
+  el.classList.add('selected');
+  sheet(items);
+  const obs = new MutationObserver(() => {
+    if (!document.querySelector('.sheet-bg')) {
+      el.classList.remove('selected');
+      obs.disconnect();
+    }
+  });
+  obs.observe(document.body, { childList: true });
+}
+
+async function copyText(t) {
+  try {
+    await navigator.clipboard.writeText(t);
+    toast('Kopyalandı');
+  } catch {
+    toast('Kopyalanamadı');
+  }
+}
+
+async function deleteMessage(conv, m, forEveryone) {
+  try {
+    const path = await S.db.rpc('delete_message', { msg: m.id, for_everyone: forEveryone });
+    if (forEveryone) {
+      if (path) S.db.remove('photos', [path]).catch(() => {});
+      if (S.conv === conv) applyMessages(conv, [{ ...m, deleted: true, body: null, image_path: null, image_w: null, image_h: null }]);
+    } else if (S.conv === conv) {
+      conv.messages = conv.messages.filter((x) => x.id !== m.id);
+      paintMessages(conv);
+    }
+    refreshChatsSoon();
+  } catch (e) {
+    toast(friendlyError(e));
+  }
+}
+
+async function downloadPhoto(m) {
+  try {
+    let url = m._localUrl || cachedUrl(m.image_path);
+    if (!url && m.image_path) {
+      const map = await S.db.signedUrls('photos', [m.image_path], 3600);
+      url = map[m.image_path];
+    }
+    if (!url) throw new Error('Fotoğraf bulunamadı');
+    const blob = await (await fetch(url)).blob();
+    const where = await saveImageToDevice(blob, `suhbet_${m.id}_${Date.now()}.jpg`);
+    toast(where === 'gallery' ? 'Galeriye kaydedildi (Resimler › Suhbet Edek)' : 'İndirildi');
+  } catch (e) {
+    toast('İndirilemedi: ' + friendlyError(e));
+  }
 }
 
 // ---- Fotoğraf bağlantıları (gizli depo → imzalı, 1 saat) ----
@@ -546,9 +730,12 @@ async function ensureImageUrls(conv) {
   }
 }
 
-function openViewer(src) {
-  const v = h('div', { id: 'viewer', onclick: () => v.remove() },
-    h('button', { class: 'icon-btn close', 'aria-label': 'Kapat' }, icon('close')),
+function openViewer(src, m) {
+  const v = h('div', { class: 'overlay viewer', onclick: (e) => { if (e.target === v || e.target.tagName === 'IMG') v.remove(); } },
+    h('div', { class: 'viewer-bar' },
+      h('button', { class: 'icon-btn', 'aria-label': 'Kapat', onclick: () => v.remove() }, icon('close')),
+      m.image_path ? h('button', { class: 'viewer-dl', onclick: () => downloadPhoto(m) }, '⬇️ Cihaza indir') : null,
+    ),
     h('img', { src, alt: 'Fotoğraf' }));
   document.body.append(v);
 }
@@ -569,6 +756,7 @@ async function sendText(conv, body, existing = null) {
   m._failed = false;
   try {
     const rows = await S.db.insert('messages', { conversation_id: conv.id, body });
+    S.seenIds.add(rows[0].id);
     const row = { ...rows[0], _client: m._client };
     if (S.conv === conv) applyMessages(conv, [row]);
     refreshChatsSoon();
@@ -602,6 +790,7 @@ async function uploadAndSend(conv, m) {
       S.urls.set(name, { url: m._localUrl, exp: Date.now() + 3300_000 });
     }
     const rows = await S.db.insert('messages', { conversation_id: conv.id, image_path: m._uploadedPath, image_w: m.image_w, image_h: m.image_h });
+    S.seenIds.add(rows[0].id);
     const row = { ...rows[0], _client: m._client };
     if (S.conv === conv) applyMessages(conv, [row]);
     refreshChatsSoon();
@@ -640,16 +829,50 @@ function markReadSoon(conv) {
 }
 
 // ------------------------------------------------------------------
+// Bildirim: zil sesi (uygulama açıkken) ya da sistem bildirimi (arka planda)
+// ------------------------------------------------------------------
+async function notifyIncoming(m) {
+  if (!m || m.sender_id === S.me?.id || S.seenIds.has(m.id) || m.deleted) return;
+  S.seenIds.add(m.id);
+  let c = S.chats.find((x) => x.conversation_id === m.conversation_id);
+  if (!c) {
+    await refreshChats();
+    c = S.chats.find((x) => x.conversation_id === m.conversation_id);
+  }
+  const who = c ? c.other_display_name || c.other_username : 'Yeni mesaj';
+  const text = m.image_path ? '📷 Fotoğraf' : m.body || '';
+  if (document.hidden) {
+    showNotification(who, text, m.conversation_id);
+    return;
+  }
+  playChime();
+  const inThisChat = S.conv?.id === m.conversation_id;
+  if (!inThisChat) banner(c?.other_avatar ?? 0, who, text, () => navigate('chat', { id: m.conversation_id }));
+}
+
+function banner(av, title, text, onTap) {
+  document.querySelector('.banner')?.remove();
+  const b = h('button', { class: 'banner', onclick: () => { b.remove(); onTap(); } },
+    avatar(av, false, 'sm'),
+    h('div', { class: 'banner-txt' }, h('b', {}, title), h('span', {}, text)));
+  document.body.append(b);
+  setTimeout(() => b.classList.add('show'), 10);
+  setTimeout(() => { b.classList.remove('show'); setTimeout(() => b.remove(), 300); }, 4000);
+}
+
+// ------------------------------------------------------------------
 // Profil
 // ------------------------------------------------------------------
 function renderProfile() {
   const name = h('input', { type: 'text', value: S.me.display_name || '', maxLength: 40, placeholder: 'Görünen ad' });
+  const head = h('div', { class: 'profile-head' });
+  const paintHead = () => head.replaceChildren(avatar(S.me.avatar, false, 'lg'), h('div', { class: 'muted' }, '@' + S.me.username));
+  paintHead();
   const save = h('button', { class: 'btn primary' }, 'Kaydet');
   save.onclick = async () => {
-    const v = name.value.trim();
     save.disabled = true;
     try {
-      const rows = await S.db.update('profiles', `id=eq.${S.me.id}`, { display_name: v });
+      const rows = await S.db.update('profiles', `id=eq.${S.me.id}`, { display_name: name.value.trim() });
       if (rows[0]) S.me = rows[0];
       toast('Kaydedildi');
     } catch (e) {
@@ -658,12 +881,26 @@ function renderProfile() {
       save.disabled = false;
     }
   };
+  const picker = avatarPicker(S.me.avatar, async (i) => {
+    const old = S.me.avatar;
+    S.me.avatar = i;
+    paintHead();
+    try {
+      const rows = await S.db.update('profiles', `id=eq.${S.me.id}`, { avatar: i });
+      if (rows[0]) S.me = rows[0];
+    } catch (e) {
+      S.me.avatar = old;
+      paintHead();
+      toast(friendlyError(e));
+    }
+  });
   const out = h('button', { class: 'btn danger' }, 'Çıkış yap');
   out.onclick = async () => {
     stopAll();
     await S.db.signOut();
     S.me = null;
     S.chats = [];
+    S.chatsLoaded = false;
     S.urls.clear();
     navigate('auth', {}, { replace: true });
   };
@@ -671,7 +908,9 @@ function renderProfile() {
     h('div', { class: 'page' },
       header('Profil', { back: true }),
       h('main', { class: 'scroll pad' },
-        h('div', { class: 'profile-head' }, avatar(S.me.display_name || S.me.username, false, 'lg'), h('div', { class: 'muted' }, '@' + S.me.username)),
+        head,
+        h('div', { class: 'pick-title' }, 'Profil resmi'),
+        picker,
         h('label', { class: 'field labeled' }, h('span', {}, 'Görünen ad'), name),
         save,
         h('p', { class: 'muted small' }, 'Arkadaşların seni kullanıcı adınla (@' + S.me.username + ') arayıp bulabilir.'),
@@ -694,18 +933,19 @@ function startRealtime() {
   });
   S.dbChannel.onJoin((ok) => {
     S.rtJoined = ok;
-    if (ok) refreshCurrent(); // kopukken kaçanlar
+    if (ok) refreshCurrent();
   });
   S.dbChannel.onChange((ch) => {
     const m = ch.record;
     if (!m || ch.table !== 'messages') return;
     const conv = S.conv;
+    const hiddenForMe = (m.hidden_by || []).includes(S.me.id);
     if (conv && m.conversation_id === conv.id) {
       applyMessages(conv, [m]);
       if (ch.type === 'INSERT' && m.sender_id !== S.me.id) markReadSoon(conv);
     }
-    if (ch.type === 'INSERT') refreshChatsSoon();
-    else if (S.screen?.name === 'chats') refreshChatsSoon();
+    if (ch.type === 'INSERT' && !hiddenForMe) notifyIncoming(m);
+    refreshChatsSoon();
   });
   S.presence = rt.channel('online', { presence: { key: S.me.id } });
   S.presence.onPresence((set) => {
@@ -725,22 +965,35 @@ function refreshChatsSoon() {
   chatsSoon = setTimeout(refreshChats, 300);
 }
 
+/** Yoklama: liste için okunmamış artışında zil */
+async function pollChats() {
+  const before = new Map(S.chats.map((c) => [c.conversation_id, c.last_message_id]));
+  const loadedBefore = S.chatsLoaded;
+  await refreshChats();
+  if (!loadedBefore) return;
+  for (const c of S.chats) {
+    const prev = before.get(c.conversation_id);
+    if (c.last_message_id && c.last_message_id !== prev && c.last_sender !== S.me.id) {
+      notifyIncoming({ id: c.last_message_id, conversation_id: c.conversation_id, sender_id: c.last_sender, body: c.last_body, image_path: c.last_has_image ? 'x' : null, deleted: c.last_deleted });
+    }
+  }
+}
+
 function refreshCurrent() {
-  if (S.screen?.name === 'chats') refreshChats();
   if (S.conv) pollConversation(S.conv);
+  else pollChats();
 }
 
 function startTimers() {
   stopTimers();
   S.db.rpc('touch_last_seen').catch(() => {});
-  // Anlık bağlantı yoksa 4 sn'de bir yokla; varsa 30 sn'de bir emniyet turu
   let tick = 0;
   S.timers.push(setInterval(() => {
-    if (document.hidden || !S.db.user) return;
+    if (!S.db.user) return;
     tick++;
     const healthy = S.rtJoined && S.db.realtime.connected;
     if (!healthy || tick % 8 === 0) refreshCurrent();
-    if (tick % 15 === 0) S.db.rpc('touch_last_seen').catch(() => {});
+    if (!document.hidden && tick % 15 === 0) S.db.rpc('touch_last_seen').catch(() => {});
   }, 4000));
 }
 
@@ -751,6 +1004,7 @@ function stopTimers() {
 
 function stopAll() {
   stopTimers();
+  leaveChat();
   S.db.realtime.disconnect();
   S.dbChannel = null;
   S.presence = null;

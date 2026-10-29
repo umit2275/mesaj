@@ -126,6 +126,11 @@ class Supa {
     return data;
   }
 
+  /** Oturumdaki kullanıcının şifresini değiştir */
+  async updatePassword(password) {
+    return this.request('/auth/v1/user', { method: 'PUT', body: { password } });
+  }
+
   async refresh() {
     if (!this.session?.refresh_token) return null;
     if (this._refreshing) return this._refreshing;
@@ -236,6 +241,12 @@ class Supa {
       body: blob,
       headers: { 'Content-Type': contentType || blob.type || 'application/octet-stream', 'x-upsert': 'false', 'cache-control': '31536000' },
     });
+  }
+
+  /** Dosyaları sil (yalnızca izin verilenler silinir) */
+  async remove(bucket, paths) {
+    if (!paths.length) return [];
+    return this.request(`/storage/v1/object/${bucket}`, { method: 'DELETE', body: { prefixes: paths } });
   }
 
   /** Birden çok dosya için imzalı bağlantı: { yol: url } */
@@ -419,6 +430,17 @@ class Channel {
     return this;
   }
 
+  /** Anlık yayın (kaydedilmez; ör. "yazıyor") */
+  onBroadcast(event, fn) {
+    (this.broadcastHandlers ||= new Map()).set(event, fn);
+    return this;
+  }
+
+  send(event, payload) {
+    if (!this.joined) return false;
+    return this.rt.push(this.topic, 'broadcast', { type: 'broadcast', event, payload }, this.rt.nextRef(), this.joinRef);
+  }
+
   track(payload) {
     this.trackPayload = payload;
     if (this.joined) this.rt.push(this.topic, 'presence', { type: 'presence', event: 'track', payload }, this.rt.nextRef(), this.joinRef);
@@ -453,6 +475,11 @@ class Channel {
       } else {
         for (const fn of this.joinHandlers) fn(false, payload);
       }
+      return;
+    }
+    if (event === 'broadcast') {
+      const fn = this.broadcastHandlers?.get(payload?.event);
+      if (fn) fn(payload.payload || {});
       return;
     }
     if (event === 'postgres_changes') {

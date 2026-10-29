@@ -72,12 +72,13 @@ function parseFilters(params) {
     }
     if (k === 'limit') { limit = ` limit ${parseInt(v, 10)}`; continue; }
     const col = ident(k);
-    const m = v.match(/^(not\.)?(eq|neq|gt|lt|gte|lte|ilike|is|in)\.(.*)$/);
+    const m = v.match(/^(not\.)?(eq|neq|gt|lt|gte|lte|ilike|is|in|cs)\.(.*)$/);
     if (!m) throw new Error('filtre anlaşılamadı ' + v);
     const [, not, op, raw] = m;
     let cond;
     if (op === 'is') cond = `${col} is ${raw === 'null' ? 'null' : raw === 'true' ? 'true' : 'false'}`;
     else if (op === 'in') cond = `${col}::text in (${raw.replace(/^\(|\)$/g, '').split(',').map(lit).join(',')})`;
+    else if (op === 'cs') cond = `${col} @> ${lit(raw)}`;
     else if (op === 'ilike') cond = `${col} ilike ${lit(raw.replace(/\*/g, '%'))}`;
     else cond = `${col} ${{ eq: '=', neq: '<>', gt: '>', lt: '<', gte: '>=', lte: '<=' }[op]} ${lit(raw)}`;
     where.push(not ? `not (${cond})` : cond);
@@ -141,6 +142,13 @@ const server = http.createServer(async (req, res) => {
       if (!u) return send(res, 400, { error_description: 'Invalid Refresh Token' });
       return send(res, 200, session(u));
     }
+    if (url.pathname === '/auth/v1/user' && req.method === 'PUT') {
+      const b = JSON.parse(await body(req));
+      const u = [...users.values()].find((x) => x.id === uid);
+      if (!u) return send(res, 401, { msg: 'oturum yok' });
+      if (b.password) u.password = b.password;
+      return send(res, 200, { id: u.id, user_metadata: u.meta });
+    }
     if (url.pathname === '/auth/v1/logout') {
       tokens.delete(auth);
       return send(res, 204);
@@ -158,6 +166,10 @@ const server = http.createServer(async (req, res) => {
           ? `select coalesce(jsonb_agg(t), '[]'::jsonb) from public.${ident(name)}(${argSql}) t`
           : `select to_jsonb(public.${ident(name)}(${argSql}))`;
         const out = sql(q, uid);
+        if (name === 'delete_message') {
+          const row = sql(`select to_jsonb(m) from public.messages m where id = ${lit(args.msg)}`, uid);
+          if (row && typeof row === 'object') broadcastChange('UPDATE', row);
+        }
         if (name === 'mark_read' && out > 0) {
           const changed = sql(`select coalesce(jsonb_agg(m), '[]'::jsonb) from public.messages m where conversation_id = ${lit(args.conv)} and read_at > now() - interval '3 seconds' and sender_id <> auth.uid()`, uid);
           for (const m of changed) broadcastChange('UPDATE', m);
@@ -194,6 +206,12 @@ const server = http.createServer(async (req, res) => {
       const b = JSON.parse(await body(req));
       const visible = sql(`select coalesce(jsonb_agg(name), '[]'::jsonb) from storage.objects where bucket_id = 'photos' and name in (${b.paths.map(lit).join(',')})`, uid);
       return send(res, 200, b.paths.map((p) => (visible.includes(p) ? { path: p, signedURL: `/object/sign/photos/${p}?token=t`, error: null } : { path: p, error: 'Either the object does not exist or you do not have access to it', signedURL: null })));
+    }
+    if (url.pathname === '/storage/v1/object/photos' && req.method === 'DELETE') {
+      const b = JSON.parse(await body(req));
+      const gone = sql(`with d as (delete from storage.objects where bucket_id = 'photos' and name in (${b.prefixes.map(lit).join(',')}) returning name) select coalesce(jsonb_agg(name), '[]'::jsonb) from d`, uid);
+      for (const n of gone) files.delete(n);
+      return send(res, 200, gone.map((name) => ({ name })));
     }
     const dl = url.pathname.match(/^\/storage\/v1\/object\/sign\/photos\/(.+)$/);
     if (dl && req.method === 'GET') {
@@ -271,6 +289,10 @@ function handleWs(sock, msg) {
       presence.set(ch.key, [...(presence.get(ch.key) || []), meta]);
       presenceBroadcast({ [ch.key]: { metas: [meta] } }, {});
     } else if (payload.event === 'untrack') leavePresence(sock);
+    return;
+  }
+  if (event === 'broadcast') {
+    for (const o of sockets) if (o !== sock && o.st.channels.has(topic)) wsSend(o, { topic, event: 'broadcast', ref: null, payload });
     return;
   }
   if (event === 'phx_leave') {

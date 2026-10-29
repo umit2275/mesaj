@@ -1,6 +1,6 @@
 {
   "appId": "com.umit.mesaj",
-  "appName": "Mesaj",
+  "appName": "Suhbet Edek",
   "webDir": "dist",
   "android": {
     "backgroundColor": "#008069",

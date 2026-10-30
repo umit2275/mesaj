@@ -8,6 +8,11 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -43,7 +48,10 @@ import java.io.OutputStream;
 )
 public class SuhbetPlugin extends Plugin {
 
-    private static final String CHANNEL_ID = "mesajlar_zil";
+    // Kısa titreşimli kanal (eski "mesajlar_zil" kanalı kaldırılır; Android kanal ayarlarını sonradan değiştirmez)
+    private static final String CHANNEL_ID = "mesajlar_v2";
+    private static final String OLD_CHANNEL_ID = "mesajlar_zil";
+    private static final long[] SHORT_VIBRATION = { 0, 220 };
     private static final String FOLDER = "Suhbet Edek";
     private int nextNotificationId = 1000;
 
@@ -121,6 +129,65 @@ public class SuhbetPlugin extends Plugin {
         }
     }
 
+    // ---------------- Uygulama açıkken: zil + kısa titreşim ----------------
+    /**
+     * Mesaj geldiğinde (uygulama açıkken) telefonun zil ayarına göre uyarır:
+     * zil açık → ses + titreşim, titreşim modu → yalnız titreşim, sessiz → hiçbiri.
+     * Ses medya sesinden değil, bildirim sesinden çalar.
+     */
+    @PluginMethod
+    public void alert(PluginCall call) {
+        Context ctx = getContext();
+        AudioManager audio = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        int mode = audio != null ? audio.getRingerMode() : AudioManager.RINGER_MODE_NORMAL;
+        if (mode == AudioManager.RINGER_MODE_NORMAL) {
+            try {
+                Uri sound = Uri.parse("android.resource://" + ctx.getPackageName() + "/raw/chime");
+                Ringtone tone = RingtoneManager.getRingtone(ctx, sound);
+                if (tone != null) {
+                    tone.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build());
+                    tone.play();
+                }
+            } catch (Exception ignored) {
+                // ses çalınamazsa titreşim yine olur
+            }
+        }
+        if (mode != AudioManager.RINGER_MODE_SILENT) {
+            vibrateShort(ctx);
+        }
+        JSObject result = new JSObject();
+        result.put("sound", mode == AudioManager.RINGER_MODE_NORMAL);
+        call.resolve(result);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void vibrateShort(Context ctx) {
+        try {
+            Vibrator vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
+            if (vibrator == null || !vibrator.hasVibrator()) {
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(220, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(220);
+            }
+        } catch (Exception ignored) {
+            // titreşim yoksa sessizce geç
+        }
+    }
+
+    /** Bildirim kanalını hazırla (Firebase bildirimleri de bu kanalı kullanır) */
+    @PluginMethod
+    public void prepareChannel(PluginCall call) {
+        Context ctx = getContext();
+        ensureChannel(ctx, Uri.parse("android.resource://" + ctx.getPackageName() + "/raw/chime"));
+        call.resolve();
+    }
+
     // ---------------- Bildirim ----------------
     @PluginMethod
     public void requestNotifyPermission(PluginCall call) {
@@ -167,6 +234,7 @@ public class SuhbetPlugin extends Plugin {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setSound(sound)
+            .setVibrate(SHORT_VIBRATION)
             .setAutoCancel(true);
         if (tap != null) {
             builder.setContentIntent(tap);
@@ -184,7 +252,13 @@ public class SuhbetPlugin extends Plugin {
             return;
         }
         NotificationManager manager = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager == null || manager.getNotificationChannel(CHANNEL_ID) != null) {
+        if (manager == null) {
+            return;
+        }
+        if (manager.getNotificationChannel(OLD_CHANNEL_ID) != null) {
+            manager.deleteNotificationChannel(OLD_CHANNEL_ID);
+        }
+        if (manager.getNotificationChannel(CHANNEL_ID) != null) {
             return;
         }
         NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Mesajlar", NotificationManager.IMPORTANCE_HIGH);
@@ -195,6 +269,7 @@ public class SuhbetPlugin extends Plugin {
             .build();
         channel.setSound(sound, attrs);
         channel.enableVibration(true);
+        channel.setVibrationPattern(SHORT_VIBRATION);
         manager.createNotificationChannel(channel);
     }
 }

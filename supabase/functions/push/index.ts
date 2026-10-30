@@ -70,7 +70,7 @@ Deno.serve(async (req: Request) => {
               data: { conversation_id: String(p.conversation_id ?? '') },
               android: {
                 priority: 'HIGH',
-                notification: { channel_id: 'mesajlar_zil', sound: 'chime', icon: 'ic_stat_suhbet', color: '#008069', tag: String(p.conversation_id ?? '') },
+                notification: { channel_id: 'mesajlar_v2', sound: 'chime', icon: 'ic_stat_suhbet', color: '#008069', tag: String(p.conversation_id ?? '') },
               },
             },
           }),

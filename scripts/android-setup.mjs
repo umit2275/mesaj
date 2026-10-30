@@ -35,13 +35,17 @@ xml = xml.replace(m[0], tag);
 const perms = [
   '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
   '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />',
+  '<uses-permission android:name="android.permission.VIBRATE" />',
 ];
 for (const p of perms) {
   const name = p.match(/android:name="([^"]+)"/)[1];
   if (!xml.includes(`"${name}"`)) xml = xml.replace('</manifest>', `    ${p}\n</manifest>`);
 }
+// Firebase bildirimleri varsayılan olarak kısa titreşimli "mesajlar_v2" kanalını kullanır
+const meta = '<meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="mesajlar_v2" />';
+if (!xml.includes('default_notification_channel_id')) xml = xml.replace('</application>', `    ${meta}\n    </application>`);
 writeFileSync(manifestPath, xml);
-console.log('[android-setup] manifest: dikey ekran, klavyede yeniden boyutlanma');
+console.log('[android-setup] manifest: dikey ekran, klavyede yeniden boyutlanma, izinler, bildirim kanalı');
 
 // Simge: uyarlanabilir simge tanımlarını kaldır, PNG'leri koy
 rmSync(join(res, 'mipmap-anydpi-v26'), { recursive: true, force: true });

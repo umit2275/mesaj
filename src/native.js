@@ -47,7 +47,7 @@ export async function setupPush({ onToken, onOpen }) {
     let st = await Push.checkPermissions();
     if (st.receive !== 'granted') st = await Push.requestPermissions();
     if (st.receive !== 'granted') return false;
-    await Push.createChannel({ id: 'mesajlar_zil', name: 'Mesajlar', description: 'Yeni mesaj bildirimleri (zil sesi)', importance: 5, sound: 'chime', vibration: true, visibility: 1 });
+    await Native.prepareChannel(); // kısa titreşimli, zil sesli bildirim kanalı
     await Push.addListener('registration', (t) => onToken(t.value));
     await Push.addListener('registrationError', () => {});
     await Push.addListener('pushNotificationActionPerformed', (a) => {
@@ -108,11 +108,21 @@ export function unlockSound() {
 }
 
 let lastChime = 0;
+/**
+ * Mesaj geldiğinde uyarı (uygulama açıkken).
+ * Telefonda: ses bildirim sesinden çalar ve zil ayarına uyar
+ * (zil açık → ses + kısa titreşim, titreşim modu → yalnız titreşim, sessiz → hiçbiri).
+ */
 export function playChime() {
   const now = Date.now();
   if (now - lastChime < 700) return; // art arda gelen mesajlarda üst üste çalmasın
   lastChime = now;
+  if (isNative()) {
+    Native.alert().catch(() => {});
+    return;
+  }
   try {
+    navigator.vibrate?.(220);
     const a = getAudio();
     a.currentTime = 0;
     a.play().catch(() => {});

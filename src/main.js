@@ -110,11 +110,8 @@ function navigate(name, params = {}, { replace = false } = {}) {
 }
 
 window.addEventListener('popstate', (e) => {
-  // Açık bir pencere (işlem menüsü / büyük fotoğraf) varsa geri tuşu önce onu kapatır
-  if (closeOverlay()) {
-    history.pushState(S.screen, '');
-    return;
-  }
+  // Açık bir pencere (işlem menüsü / büyük fotoğraf) varsa geri tuşu yalnızca onu kapatır
+  if (closeOverlay()) return;
   const st = e.state;
   if (!st) return;
   if (!S.db?.user && st.name !== 'auth') {
@@ -132,8 +129,21 @@ function closeOverlay() {
   return true;
 }
 
+/** Pencere aç: geçmişe bir adım eklenir, böylece telefonun geri tuşu önce pencereyi kapatır */
+function openOverlay(el) {
+  document.querySelectorAll('.overlay').forEach((o) => o.remove());
+  document.body.append(el);
+  history.pushState({ ...S.screen, overlay: true }, '');
+}
+
+/** Pencereyi uygulama içinden kapat (kapat düğmesi, boşluğa dokunma) */
+function dismissOverlay() {
+  if (history.state?.overlay) history.back(); // popstate pencereyi kaldırır
+  else closeOverlay();
+}
+
 function show(st) {
-  if (S.conv && st.name !== 'chat') leaveChat();
+  if (S.conv) leaveChat();
   S.screen = st;
   document.querySelectorAll('.overlay').forEach((o) => o.remove());
   switch (st.name) {
@@ -488,12 +498,27 @@ async function renderChat({ id, other }) {
     if (scroller.scrollTop < 80) loadOlder(conv);
   });
 
+  goOnline();
   await loadLatest(conv, true);
+}
+
+/** Sohbet ekranındayken: çevrimiçi görün, son görülmeyi güncelle */
+function goOnline() {
+  if (document.hidden || !S.conv) return;
+  S.presence?.track({ online_at: new Date().toISOString() });
+  S.db.rpc('touch_last_seen').catch(() => {});
+}
+
+/** Sohbetten çıkınca / uygulama arka plana geçince: çevrimdışı, son görülme = şimdi */
+function goOffline() {
+  S.presence?.untrack();
+  S.db?.rpc('touch_last_seen').catch(() => {});
 }
 
 function leaveChat() {
   const conv = S.conv;
   S.conv = null;
+  if (conv) goOffline();
   if (conv?.typingCh) S.db.realtime.removeChannel(conv.typingCh);
   clearTimeout(conv?.typingTimer);
 }
@@ -649,12 +674,12 @@ function longPress(el, fn) {
 
 // ---- İşlem menüsü: indir, kopyala, benden sil, herkesten sil ----
 function sheet(items) {
-  const box = h('div', { class: 'overlay sheet-bg', onclick: (e) => { if (e.target === box) box.remove(); } },
+  const box = h('div', { class: 'overlay sheet-bg', onclick: (e) => { if (e.target === box) dismissOverlay(); } },
     h('div', { class: 'sheet', role: 'menu' },
-      ...items.map((it) => h('button', { class: `sheet-item ${it.danger ? 'danger' : ''}`, role: 'menuitem', onclick: () => { box.remove(); it.run(); } }, it.label)),
-      h('button', { class: 'sheet-item cancel', onclick: () => box.remove() }, 'Vazgeç'),
+      ...items.map((it) => h('button', { class: `sheet-item ${it.danger ? 'danger' : ''}`, role: 'menuitem', onclick: () => { dismissOverlay(); it.run(); } }, it.label)),
+      h('button', { class: 'sheet-item cancel', onclick: () => dismissOverlay() }, 'Vazgeç'),
     ));
-  document.body.append(box);
+  openOverlay(box);
 }
 
 function openActions(conv, m, el) {
@@ -740,13 +765,13 @@ async function ensureImageUrls(conv) {
 }
 
 function openViewer(src, m) {
-  const v = h('div', { class: 'overlay viewer', onclick: (e) => { if (e.target === v || e.target.tagName === 'IMG') v.remove(); } },
+  const v = h('div', { class: 'overlay viewer', onclick: (e) => { if (e.target === v || e.target.tagName === 'IMG') dismissOverlay(); } },
     h('div', { class: 'viewer-bar' },
-      h('button', { class: 'icon-btn', 'aria-label': 'Kapat', onclick: () => v.remove() }, icon('close')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Kapat', onclick: (e) => { e.stopPropagation(); dismissOverlay(); } }, icon('close')),
       m.image_path ? h('button', { class: 'viewer-dl', onclick: () => downloadPhoto(m) }, '⬇️ Cihaza indir') : null,
     ),
     h('img', { src, alt: 'Fotoğraf' }));
-  document.body.append(v);
+  openOverlay(v);
 }
 
 // ---- Gönderme ----
@@ -965,7 +990,7 @@ function startRealtime() {
     if (S.screen?.name === 'chats') paintChats();
     S.conv?.paintStatus?.();
   });
-  S.presence.track({ online_at: new Date().toISOString() });
+  // Çevrimiçi yalnızca bir sohbetin içindeyken görünür (bkz. goOnline)
   rt.onStatus((up) => {
     if (!up) S.rtJoined = false;
   });
@@ -998,14 +1023,13 @@ function refreshCurrent() {
 
 function startTimers() {
   stopTimers();
-  S.db.rpc('touch_last_seen').catch(() => {});
   let tick = 0;
   S.timers.push(setInterval(() => {
     if (!S.db.user) return;
     tick++;
     const healthy = S.rtJoined && S.db.realtime.connected;
     if (!healthy || tick % 8 === 0) refreshCurrent();
-    if (!document.hidden && tick % 15 === 0) S.db.rpc('touch_last_seen').catch(() => {});
+    if (S.conv && !document.hidden && tick % 15 === 0) S.db.rpc('touch_last_seen').catch(() => {});
   }, 4000));
 }
 
@@ -1026,9 +1050,11 @@ function stopAll() {
 
 document.addEventListener('visibilitychange', () => {
   if (!S.db?.user || !S.me) return;
-  S.db.rpc('touch_last_seen').catch(() => {});
-  if (document.hidden) S.presence?.untrack();
-  else S.presence?.track({ online_at: new Date().toISOString() });
+  if (document.hidden) {
+    if (S.conv) goOffline();
+  } else {
+    goOnline();
+  }
   if (!document.hidden) {
     S.db.realtime.connect();
     refreshCurrent();

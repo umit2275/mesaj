@@ -71,7 +71,7 @@ ok((await ali.locator('.chat-item .avatar .emoji').first().innerText()) === '�
 await ali.getByText('@ayse').click();
 await ali.getByPlaceholder('Mesaj').waitFor();
 await ali.waitForTimeout(800);
-if (!NOWS) ok(/çevrimiçi/.test(await ali.locator('.title-sub').innerText()), 'Ayşe çevrimiçi görünüyor');
+ok(!/çevrimiçi/.test(await ali.locator('.title-sub').innerText()), 'Ayşe sohbete girmediği için çevrimiçi görünmüyor');
 
 // Yazıyor bilgisi
 if (!NOWS) {
@@ -93,6 +93,10 @@ await shot(ayse, '02_bildirim');
 await ayse.locator('.banner').click();
 await ayse.getByText('Merhaba Ayşe! Nasılsın?').waitFor();
 ok(true, 'bildirime dokununca sohbet açıldı');
+if (!NOWS) {
+  await ali.waitForFunction(() => /çevrimiçi/.test(document.querySelector('.title-sub')?.textContent || ''), null, { timeout: 5000 });
+  ok(true, 'Ayşe sohbete girince Ali onu çevrimiçi görüyor');
+}
 
 // Görüldü
 await ali.locator('.seen').waitFor({ timeout: 8000 });
@@ -124,7 +128,14 @@ await ali.locator('.viewer img').waitFor();
 await shot(ali, '04_foto_indir');
 const [dl] = await Promise.all([ali.waitForEvent('download', { timeout: 8000 }), ali.getByRole('button', { name: /Cihaza indir/ }).click()]);
 ok(/\.jpg$/.test(dl.suggestedFilename()), 'fotoğraf cihaza indirildi (' + dl.suggestedFilename() + ')');
-await ali.locator('.viewer .icon-btn').click();
+await ali.goBack(); // telefonun geri tuşu
+await ali.waitForTimeout(400);
+ok(await ali.locator('.viewer').count() === 0 && await ali.getByPlaceholder('Mesaj').isVisible(), 'geri tuşu fotoğrafı kapattı, sohbette kalındı');
+await longPress(ali, ali.locator('.msg.in .bubble').first());
+await ali.locator('.sheet').waitFor();
+await ali.goBack();
+await ali.waitForTimeout(400);
+ok(await ali.locator('.sheet').count() === 0 && await ali.getByPlaceholder('Mesaj').isVisible(), 'geri tuşu menüyü kapattı, sohbette kalındı');
 
 // Herkesten sil (okunmuş olsa bile): Ali kendi ilk mesajını siler
 await longPress(ali, ali.locator('.msg.out .bubble').first());

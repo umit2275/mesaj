@@ -463,7 +463,7 @@ async function openWith(p) {
 // ------------------------------------------------------------------
 // Sohbet ekranı
 // ------------------------------------------------------------------
-const hiddenFilter = () => `hidden_by=not.cs.%7B${S.me.id}%7D&deleted=is.false`;
+const hiddenFilter = () => `hidden_by=not.cs.%7B${S.me.id}%7D`;
 /** "Sohbeti sil" sonrası: o andan önceki mesajlar gösterilmez */
 const clearedFilter = (conv) => (conv.clearedAt ? `&created_at=gt.${encodeURIComponent(conv.clearedAt)}` : '');
 
@@ -704,8 +704,9 @@ function applyMessages(conv, rows, { stick = false } = {}) {
     const cut = Date.parse(conv.clearedAt);
     rows = rows.filter((r) => !r.created_at || Date.parse(r.created_at) > cut || r._client);
   }
-  // Benden silinen ve herkesten silinen mesajlar iz bırakmadan kaybolur
-  const hiddenNow = new Set(rows.filter((r) => r.deleted || (r.hidden_by || []).includes(S.me.id)).map((r) => r.id));
+  // Benden silinenler kaybolur; karşı tarafın herkesten sildiği mesaj bende iz bırakmaz
+  // (kendi sildiğim mesajın yerinde "Bu mesajı sildin" kalır)
+  const hiddenNow = new Set(rows.filter((r) => (r.deleted && r.sender_id !== S.me.id) || (r.hidden_by || []).includes(S.me.id)).map((r) => r.id));
   conv.messages = mergeMessages(conv.messages, rows.filter((r) => !hiddenNow.has(r.id))).filter((m) => !hiddenNow.has(m.id));
   paintMessages(conv);
   if (wasBottom) conv.scroller.scrollTop = conv.scroller.scrollHeight;
@@ -829,10 +830,7 @@ async function deleteMessage(conv, m, forEveryone) {
     const path = await S.db.rpc('delete_message', { msg: m.id, for_everyone: forEveryone });
     if (forEveryone) {
       if (path) S.db.remove('photos', [path]).catch(() => {});
-      if (S.conv === conv) {
-        conv.messages = conv.messages.filter((x) => x.id !== m.id);
-        paintMessages(conv);
-      }
+      if (S.conv === conv) applyMessages(conv, [{ ...m, deleted: true, body: null, image_path: null, image_w: null, image_h: null }]);
     } else if (S.conv === conv) {
       conv.messages = conv.messages.filter((x) => x.id !== m.id);
       paintMessages(conv);

@@ -79,6 +79,7 @@ returns table (
     left join lateral (
       select * from public.messages mm
        where mm.conversation_id = c.id and not (auth.uid() = any (mm.hidden_by))
+         and not mm.deleted
          and mm.created_at > coalesce(s.cleared_at, '-infinity')
        order by mm.id desc limit 1
     ) m on true

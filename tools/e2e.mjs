@@ -149,9 +149,9 @@ await longPress(ali, ali.locator('.msg.out .bubble').first());
 await ali.locator('.sheet').waitFor();
 await shot(ali, '05_islem_menusu');
 await ali.getByRole('menuitem', { name: /Herkesten sil/ }).click();
-await ali.getByText('Bu mesajı sildin').waitFor();
-await ayse.getByText('Bu mesaj silindi').waitFor({ timeout: 8000 });
-ok(true, 'okunmuş mesaj herkesten silindi (Ayşe\'de "Bu mesaj silindi")');
+await ali.locator('.msg', { hasText: 'Merhaba Ayşe! Nasılsın?' }).waitFor({ state: 'detached' });
+await ayse.locator('.msg', { hasText: 'Merhaba Ayşe! Nasılsın?' }).waitFor({ state: 'detached', timeout: 8000 });
+ok(await ayse.getByText(/silindi/).count() === 0, 'okunmuş mesaj herkesten silindi, Ayşe\'de iz kalmadı ("silindi" yazısı yok)');
 
 // Benden sil: Ali, Ayşe'nin "İyiyim" mesajını kendinden siler, Ayşe'de durur
 await longPress(ali, ali.locator('.msg.in .bubble', { hasText: 'İyiyim' }));

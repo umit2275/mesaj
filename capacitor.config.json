@@ -4,7 +4,7 @@
   "webDir": "dist",
   "android": {
     "backgroundColor": "#008069",
-    "adjustMarginsForEdgeToEdge": "auto"
+    "adjustMarginsForEdgeToEdge": "disable"
   },
   "server": {
     "androidScheme": "https"

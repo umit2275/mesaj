@@ -47,7 +47,7 @@ async function signup(p, user, name, pass, avatarIndex) {
   await p.locator('input[type=password]').fill(pass);
   await p.locator('.avatar-grid .pick').nth(avatarIndex).click();
   await p.getByRole('button', { name: 'Hesap oluştur' }).click();
-  await p.getByText('Suhbet Edek', { exact: true }).first().waitFor({ timeout: 10000 });
+  await p.getByText('Chat X', { exact: true }).first().waitFor({ timeout: 10000 });
 }
 
 await fetch(new URL('/__reset', process.env.MOCK || 'http://localhost:54321'), { method: 'POST' });
@@ -229,7 +229,7 @@ await ali.getByRole('button', { name: 'Çıkış yap' }).click();
 await ali.getByPlaceholder('Kullanıcı adı').fill('umit_ali');
 await ali.locator('input[type=password]').fill('1');
 await ali.getByRole('button', { name: 'Giriş yap' }).click();
-await ali.getByText('Suhbet Edek', { exact: true }).first().waitFor({ timeout: 8000 });
+await ali.getByText('Chat X', { exact: true }).first().waitFor({ timeout: 8000 });
 ok(true, 'çıkıp tek karakterlik şifreyle tekrar girdi');
 
 console.log(errors.length ? 'HATALAR:\n' + errors.join('\n') : 'sayfa hatası yok');

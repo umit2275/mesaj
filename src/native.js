@@ -18,7 +18,7 @@ function blobToBase64(blob) {
   });
 }
 
-/** Fotoğrafı cihaza kaydet (Android: Galeri → Resimler/Suhbet Edek) */
+/** Fotoğrafı cihaza kaydet (Android: Galeri → Resimler/Chat X) */
 export async function saveImageToDevice(blob, name) {
   if (isNative()) {
     const data = await blobToBase64(blob);

@@ -34,8 +34,8 @@ import java.io.FileOutputStream;
 import java.io.OutputStream;
 
 /**
- * Suhbet Edek'in kendi küçük eklentisi:
- *  - saveImage: fotoğrafı galeriye kaydeder (Resimler/Suhbet Edek)
+ * Chat X'in kendi küçük eklentisi:
+ *  - saveImage: fotoğrafı galeriye kaydeder (Resimler/Chat X)
  *  - showNotification: zil sesli bildirim gösterir
  *  - requestNotifyPermission: Android 13+ bildirim izni
  */
@@ -52,7 +52,7 @@ public class SuhbetPlugin extends Plugin {
     private static final String CHANNEL_ID = "mesajlar_v2";
     private static final String OLD_CHANNEL_ID = "mesajlar_zil";
     private static final long[] SHORT_VIBRATION = { 0, 220 };
-    private static final String FOLDER = "Suhbet Edek";
+    private static final String FOLDER = "Chat X";
     private int nextNotificationId = 1000;
 
     // ---------------- Galeriye kaydet ----------------
@@ -209,7 +209,7 @@ public class SuhbetPlugin extends Plugin {
 
     @PluginMethod
     public void showNotification(PluginCall call) {
-        String title = call.getString("title", "Suhbet Edek");
+        String title = call.getString("title", "Chat X");
         String body = call.getString("body", "");
         Context ctx = getContext();
         Uri sound = Uri.parse("android.resource://" + ctx.getPackageName() + "/raw/chime");

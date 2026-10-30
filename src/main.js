@@ -10,7 +10,7 @@ import {
   withDaySeparators, mergeMessages, friendlyError, hhmm, fitSize, AVATARS, avatarAt, randomAvatar, PASSWORD_MAX,
 } from './util.js';
 
-const APP_NAME = 'Suhbet Edek';
+const APP_NAME = 'Chat X';
 const app = document.getElementById('app');
 const PAGE = 40; // bir seferde yüklenen mesaj sayısı
 
@@ -854,7 +854,7 @@ async function downloadPhoto(m) {
     if (!url) throw new Error('Fotoğraf bulunamadı');
     const blob = await (await fetch(url)).blob();
     const where = await saveImageToDevice(blob, `suhbet_${m.id}_${Date.now()}.jpg`);
-    toast(where === 'gallery' ? 'Galeriye kaydedildi (Resimler › Suhbet Edek)' : 'İndirildi');
+    toast(where === 'gallery' ? 'Galeriye kaydedildi (Resimler › Chat X)' : 'İndirildi');
   } catch (e) {
     toast('İndirilemedi: ' + friendlyError(e));
   }

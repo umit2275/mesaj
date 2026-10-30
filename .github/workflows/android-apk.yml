@@ -55,21 +55,21 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-          cp app/build/outputs/apk/debug/app-debug.apk ../Mesaj-${{ github.run_number }}.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../ChatX-${{ github.run_number }}.apk
 
       - name: Yapıt olarak sakla
         uses: actions/upload-artifact@v4
         with:
           name: Mesaj-apk
-          path: Mesaj-${{ github.run_number }}.apk
+          path: ChatX-${{ github.run_number }}.apk
 
       - name: Releases sayfasına yükle
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Mesaj – derleme ${{ github.run_number }}
+          name: Chat X – derleme ${{ github.run_number }}
           body: |
             Otomatik derleme (debug APK). Telefona indirip açarak kurun.
             Commit: ${{ github.sha }}
-          files: Mesaj-${{ github.run_number }}.apk
+          files: ChatX-${{ github.run_number }}.apk
           make_latest: true

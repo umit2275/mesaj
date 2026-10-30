@@ -1,4 +1,4 @@
-# Suhbet Edek
+# Chat X
 
 Android için birebir mesajlaşma uygulaması: kullanıcı adıyla kayıt/giriş, anlık mesaj,
 fotoğraf gönderme, okundu (mavi çift tik), çevrimiçi / son görülme.

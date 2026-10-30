@@ -1,6 +1,6 @@
 {
   "appId": "com.umit.mesaj",
-  "appName": "Suhbet Edek",
+  "appName": "Chat X",
   "webDir": "dist",
   "android": {
     "backgroundColor": "#008069",

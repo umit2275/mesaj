@@ -360,7 +360,7 @@ function paintChats() {
     const item = h('button', { class: 'chat-item', onclick: () => navigate('chat', { id: c.conversation_id }) },
       avatar(c.other_avatar, S.online.has(c.other_id)),
       h('div', { class: 'chat-mid' },
-        h('div', { class: 'chat-row' }, h('span', { class: 'chat-name' }, name), h('span', { class: `chat-time ${c.unread ? 'hl' : ''}` }, listTime(c.last_created_at))),
+        h('div', { class: 'chat-row' }, h('span', { class: 'chat-name' }, name, h('span', { class: 'uname' }, '@' + c.other_username)), h('span', { class: `chat-time ${c.unread ? 'hl' : ''}` }, listTime(c.last_created_at))),
         h('div', { class: 'chat-row' }, h('span', { class: 'chat-preview' }, tick, ...previewOf(c)), c.unread ? h('span', { class: 'badge' }, c.unread > 99 ? '99+' : c.unread) : null),
       ),
     );
@@ -474,7 +474,9 @@ async function renderChat({ id, other }) {
   S.conv = conv;
 
   const sub = h('span', { class: 'status' }, '');
-  const titleName = h('span', {}, o ? o.display_name || o.username : '…');
+  const titleName = h('span', {});
+  const paintTitle = (p) => titleName.replaceChildren(p ? p.display_name || p.username : '…', p ? h('span', { class: 'uname' }, '@' + p.username) : '');
+  paintTitle(o);
   const headAvatar = h('div', { class: 'head-avatar' }, o ? avatar(o.avatar, false, 'sm') : null);
   const msgs = h('div', { class: 'messages' });
   const scroller = h('main', { class: 'scroll chat-bg' }, h('div', { class: 'older hidden' }, h('div', { class: 'spinner sm' })), msgs);
@@ -530,7 +532,7 @@ async function renderChat({ id, other }) {
       const ps = otherId ? await S.db.select('profiles', `id=eq.${otherId}&select=id,username,display_name,avatar,last_seen`) : [];
       conv.other = ps[0] || null;
       if (conv.other && S.conv === conv) {
-        titleName.textContent = conv.other.display_name || conv.other.username;
+        paintTitle(conv.other);
         headAvatar.replaceChildren(avatar(conv.other.avatar, false, 'sm'));
       }
     } catch {
@@ -540,6 +542,7 @@ async function renderChat({ id, other }) {
     S.db.select('profiles', `id=eq.${conv.other.id}&select=last_seen,avatar,display_name`).then((r) => {
       if (r[0] && S.conv === conv) {
         Object.assign(conv.other, r[0]);
+        paintTitle(conv.other);
         headAvatar.replaceChildren(avatar(conv.other.avatar, false, 'sm'));
         conv.paintStatus();
       }

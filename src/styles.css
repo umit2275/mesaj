@@ -94,6 +94,7 @@ input, textarea { font: inherit; color: var(--text); }
 .chat-mid { flex: 1; min-width: 0; border-bottom: 1px solid var(--line); padding: 4px 0 12px; }
 .chat-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .chat-name { font-weight: 600; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uname { font-weight: 400; font-size: 0.78em; opacity: 0.6; margin-left: 6px; }
 .chat-time { font-size: 12px; color: var(--muted); flex-shrink: 0; }
 .chat-time.hl { color: var(--accent); font-weight: 600; }
 .chat-preview { color: var(--muted); font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; display: flex; align-items: center; gap: 3px; }

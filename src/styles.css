@@ -218,3 +218,16 @@ input, textarea { font: inherit; color: var(--text); }
 .banner.show { transform: translateY(0); }
 .banner-txt { display: flex; flex-direction: column; min-width: 0; }
 .banner-txt span { color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- onay penceresi ---- */
+.sheet-bg.center { align-items: center; justify-content: center; padding: 24px; }
+.dialog { width: 100%; max-width: 360px; background: var(--bg); border-radius: 16px; padding: 20px 20px 10px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35); animation: fade 0.15s; }
+.dialog-title { font-weight: 700; font-size: 17px; margin-bottom: 8px; }
+.dialog-text { color: var(--muted); font-size: 14.5px; line-height: 1.45; }
+.dialog-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
+.dialog-btn { padding: 10px 16px; border-radius: 20px; font-weight: 600; color: var(--brand-dark); }
+.dialog-btn.danger { color: var(--danger); }
+@media (prefers-color-scheme: dark) { .dialog-btn { color: var(--accent); } .dialog-btn.danger { color: #ff6b81; } }
+.chat-item.selected { background: var(--input-bg); }
+.chat-item { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.viewer img { will-change: transform; cursor: zoom-in; }

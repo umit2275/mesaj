@@ -128,6 +128,13 @@ await ali.locator('.viewer img').waitFor();
 await shot(ali, '04_foto_indir');
 const [dl] = await Promise.all([ali.waitForEvent('download', { timeout: 8000 }), ali.getByRole('button', { name: /Cihaza indir/ }).click()]);
 ok(/\.jpg$/.test(dl.suggestedFilename()), 'fotoğraf cihaza indirildi (' + dl.suggestedFilename() + ')');
+// Yakınlaştırma: çift dokunuş
+await ali.locator('.viewer img').dblclick();
+await ali.waitForTimeout(300);
+ok(+(await ali.locator('.viewer img').getAttribute('data-scale')) > 2, 'çift dokunuşla fotoğraf yakınlaştı (' + (await ali.locator('.viewer img').getAttribute('data-scale')) + 'x)');
+await ali.locator('.viewer img').dblclick();
+await ali.waitForTimeout(300);
+ok(+(await ali.locator('.viewer img').getAttribute('data-scale')) === 1, 'tekrar çift dokunuşla eski boyutuna döndü');
 await ali.goBack(); // telefonun geri tuşu
 await ali.waitForTimeout(400);
 ok(await ali.locator('.viewer').count() === 0 && await ali.getByPlaceholder('Mesaj').isVisible(), 'geri tuşu fotoğrafı kapattı, sohbette kalındı');
@@ -156,6 +163,46 @@ await ayse.waitForTimeout(800);
 ok(await ayse.locator('.msg', { hasText: 'İyiyim' }).count() === 1, 'Ayşe\'de mesaj duruyor');
 await shot(ali, '06_sohbet_ali');
 await shot(ayse, '07_sohbet_ayse');
+
+// Sohbet içi ⋮ → Sohbeti sil: mesajlar Ali'den silinir, sohbet listede kalır
+await ali.getByRole('button', { name: 'Sohbet menüsü' }).click();
+await ali.getByRole('menuitem', { name: /Sohbeti sil/ }).click();
+await ali.locator('.dialog').waitFor();
+await ali.waitForTimeout(500); await shot(ali, '06b_onay');
+await ali.getByRole('button', { name: 'Sil', exact: true }).click();
+await ali.waitForTimeout(600);
+ok(await ali.locator('.msg').count() === 0, 'sohbet içinden silinince Ali\'de mesaj kalmadı');
+await ayse.waitForTimeout(500);
+ok(await ayse.locator('.msg').count() > 0, 'Ayşe\'nin mesajları duruyor');
+await ali.goBack();
+await ali.locator('.chat-item').first().waitFor();
+ok(await ali.locator('.chat-item').count() === 1 && /Mesaj yok/.test(await ali.locator('.chat-preview').first().innerText()), 'sohbet kutusu listede kaldı ("Mesaj yok")');
+await ayse.getByPlaceholder('Mesaj').fill('Silince yeni mesaj gelir mi?');
+await ayse.getByRole('button', { name: 'Gönder', exact: true }).click();
+await ali.waitForFunction(() => /Silince yeni mesaj/.test(document.querySelector('.chat-preview')?.textContent || ''), null, { timeout: 8000 });
+ok(true, 'temizlenen sohbete yeni mesaj geldi');
+await ali.locator('.chat-item').first().click();
+await ali.locator('.msg', { hasText: 'Silince yeni mesaj gelir mi?' }).waitFor();
+await ali.waitForTimeout(500);
+ok(await ali.locator('.msg').count() === 1, 'sohbette yalnızca yeni mesaj görünüyor');
+await ali.goBack();
+
+// Listede basılı tut → Sohbeti sil: sohbet listeden kalkar
+await longPress(ali, ali.locator('.chat-item').first());
+await ali.locator('.sheet').waitFor();
+ok(await ali.getByPlaceholder('Mesaj').count() === 0, 'uzun basınca sohbet açılmadı, menü çıktı');
+await ali.getByRole('menuitem', { name: /Sohbeti sil/ }).click();
+await ali.getByRole('button', { name: 'Sil', exact: true }).click();
+await ali.waitForTimeout(600);
+ok(await ali.locator('.chat-item').count() === 0, 'sohbet Ali\'nin listesinden kalktı');
+await ayse.getByPlaceholder('Mesaj').fill('Geri geldim');
+await ayse.getByRole('button', { name: 'Gönder', exact: true }).click();
+await ali.locator('.chat-item').first().waitFor({ timeout: 8000 });
+ok(/Geri geldim/.test(await ali.locator('.chat-preview').first().innerText()), 'yeni mesajla sohbet listeye geri geldi');
+await ali.locator('.chat-item').first().click();
+await ali.locator('.msg', { hasText: 'Geri geldim' }).waitFor();
+await ali.waitForTimeout(500);
+ok(await ali.locator('.msg').count() === 1, 'geri gelen sohbette yalnızca yeni mesaj var');
 
 // Profil resmini değiştir
 await ali.goBack();

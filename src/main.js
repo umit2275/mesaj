@@ -3,6 +3,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 import { createClient } from './lib/supa.js';
 import { h, icon, toast } from './dom.js';
 import { prepareImage } from './image.js';
+import { enableZoom } from './zoom.js';
 import { saveImageToDevice, askNotificationPermission, showNotification, playChime, unlockSound, setupPush } from './native.js';
 import {
   normalizeUsername, usernameError, passwordError, serverPassword, usernameToEmail, listTime, lastSeenText,
@@ -110,8 +111,16 @@ function navigate(name, params = {}, { replace = false } = {}) {
 }
 
 window.addEventListener('popstate', (e) => {
-  // Açık bir pencere (işlem menüsü / büyük fotoğraf) varsa geri tuşu yalnızca onu kapatır
-  if (closeOverlay()) return;
+  const hadOverlay = closeOverlay();
+  // Uygulama içinden kapatılan pencere (kapat düğmesi, menü seçimi): ekranı değiştirme
+  if (pendingDismiss) {
+    const done = pendingDismiss;
+    pendingDismiss = null;
+    done();
+    return;
+  }
+  // Telefonun geri tuşu açık pencereyi kapattı: ekran aynı kalır
+  if (hadOverlay) return;
   const st = e.state;
   if (!st) return;
   if (!S.db?.user && st.name !== 'auth') {
@@ -136,10 +145,48 @@ function openOverlay(el) {
   history.pushState({ ...S.screen, overlay: true }, '');
 }
 
-/** Pencereyi uygulama içinden kapat (kapat düğmesi, boşluğa dokunma) */
+let pendingDismiss = null;
+/** Pencereyi uygulama içinden kapat (kapat düğmesi, boşluğa dokunma). Kapanınca çözülür. */
 function dismissOverlay() {
-  if (history.state?.overlay) history.back(); // popstate pencereyi kaldırır
-  else closeOverlay();
+  return new Promise((resolve) => {
+    if (history.state?.overlay) {
+      pendingDismiss = resolve;
+      history.back(); // popstate pencereyi kaldırır
+    } else {
+      closeOverlay();
+      resolve();
+    }
+  });
+}
+
+/** Onay penceresi: true = onaylandı */
+function confirmBox(title, text, okLabel) {
+  return new Promise((resolve) => {
+    let answered = false;
+    const answer = (v) => {
+      if (answered) return;
+      answered = true;
+      dismissOverlay().then(() => resolve(v));
+    };
+    const box = h('div', { class: 'overlay sheet-bg center', onclick: (e) => { if (e.target === box) answer(false); } },
+      h('div', { class: 'dialog', role: 'alertdialog' },
+        h('div', { class: 'dialog-title' }, title),
+        h('div', { class: 'dialog-text' }, text),
+        h('div', { class: 'dialog-buttons' },
+          h('button', { class: 'dialog-btn', onclick: () => answer(false) }, 'Vazgeç'),
+          h('button', { class: 'dialog-btn danger', onclick: () => answer(true) }, okLabel),
+        ),
+      ));
+    openOverlay(box);
+    // geri tuşuyla kapanırsa "vazgeç"
+    const obs = new MutationObserver(() => {
+      if (!box.isConnected) {
+        obs.disconnect();
+        if (!answered) { answered = true; resolve(false); }
+      }
+    });
+    obs.observe(document.body, { childList: true });
+  });
 }
 
 function show(st) {
@@ -291,7 +338,7 @@ function renderChats() {
 }
 
 function previewOf(c) {
-  if (!c.last_message_id) return [h('span', { class: 'muted' }, 'Sohbet başladı')];
+  if (!c.last_message_id) return [h('span', { class: 'muted' }, c.cleared_at ? 'Mesaj yok' : 'Sohbet başladı')];
   if (c.last_deleted) return [h('span', { class: 'muted deleted' }, c.last_sender === S.me.id ? '🚫 Bu mesajı sildin' : '🚫 Bu mesaj silindi')];
   if (c.last_has_image) return [icon('photo', 'ic sm'), ' Fotoğraf'];
   return [c.last_body || ''];
@@ -310,14 +357,39 @@ function paintChats() {
     const name = c.other_display_name || c.other_username;
     const mine = c.last_sender === S.me.id && c.last_message_id && !c.last_deleted;
     const tick = mine ? h('span', { class: `st ticks ${c.last_read_at ? 'read' : ''}` }, icon(c.last_read_at ? 'checks' : 'check', 'ic xs')) : null;
-    return h('button', { class: 'chat-item', onclick: () => navigate('chat', { id: c.conversation_id }) },
+    const item = h('button', { class: 'chat-item', onclick: () => navigate('chat', { id: c.conversation_id }) },
       avatar(c.other_avatar, S.online.has(c.other_id)),
       h('div', { class: 'chat-mid' },
         h('div', { class: 'chat-row' }, h('span', { class: 'chat-name' }, name), h('span', { class: `chat-time ${c.unread ? 'hl' : ''}` }, listTime(c.last_created_at))),
         h('div', { class: 'chat-row' }, h('span', { class: 'chat-preview' }, tick, ...previewOf(c)), c.unread ? h('span', { class: 'badge' }, c.unread > 99 ? '99+' : c.unread) : null),
       ),
     );
+    longPress(item, () => chatListActions(c, item));
+    return item;
   }));
+}
+
+function chatListActions(c, item) {
+  const name = c.other_display_name || c.other_username;
+  item.classList.add('selected');
+  sheet([{ label: '🗑️  Sohbeti sil', danger: true, run: () => deleteChat(c, name) }]);
+  const obs = new MutationObserver(() => {
+    if (!document.querySelector('.sheet-bg')) { item.classList.remove('selected'); obs.disconnect(); }
+  });
+  obs.observe(document.body, { childList: true });
+}
+
+async function deleteChat(c, name) {
+  const ok = await confirmBox(`${name} ile sohbet silinsin mi?`, 'Sohbet ve mesajlar senden silinir, listeden kalkar. Karşı taraftan silinmez. Yeni mesaj gelirse sohbet geri gelir.', 'Sil');
+  if (!ok) return;
+  try {
+    await S.db.rpc('clear_chat', { conv: c.conversation_id, remove: true });
+    S.chats = S.chats.filter((x) => x.conversation_id !== c.conversation_id);
+    paintChats();
+    toast('Sohbet silindi');
+  } catch (e) {
+    toast(friendlyError(e));
+  }
 }
 
 let chatsBusy = false;
@@ -392,11 +464,13 @@ async function openWith(p) {
 // Sohbet ekranı
 // ------------------------------------------------------------------
 const hiddenFilter = () => `hidden_by=not.cs.%7B${S.me.id}%7D`;
+/** "Sohbeti sil" sonrası: o andan önceki mesajlar gösterilmez */
+const clearedFilter = (conv) => (conv.clearedAt ? `&created_at=gt.${encodeURIComponent(conv.clearedAt)}` : '');
 
 async function renderChat({ id, other }) {
   const known = S.chats.find((c) => c.conversation_id === id);
   const o = other || (known && { id: known.other_id, username: known.other_username, display_name: known.other_display_name, avatar: known.other_avatar, last_seen: known.other_last_seen });
-  const conv = { id, other: o || null, messages: [], hasMore: true, loadingOlder: false, typingUntil: 0 };
+  const conv = { id, other: o || null, messages: [], hasMore: true, loadingOlder: false, typingUntil: 0, clearedAt: known?.cleared_at || null };
   S.conv = conv;
 
   const sub = h('span', { class: 'status' }, '');
@@ -415,6 +489,7 @@ async function renderChat({ id, other }) {
         h('button', { class: 'icon-btn', 'aria-label': 'Geri', onclick: () => history.back() }, icon('back')),
         headAvatar,
         h('div', { class: 'title' }, h('div', { class: 'title-main' }, titleName), h('div', { class: 'title-sub' }, sub)),
+        h('button', { class: 'icon-btn', 'aria-label': 'Sohbet menüsü', onclick: () => chatMenu(conv) }, icon('more')),
       ),
       scroller,
       h('footer', { class: 'composer' }, attachBtn, h('div', { class: 'input-wrap' }, text), sendBtn, file),
@@ -499,6 +574,14 @@ async function renderChat({ id, other }) {
   });
 
   goOnline();
+  if (!known) {
+    try {
+      const st = await S.db.select('chat_state', `conversation_id=eq.${id}&select=cleared_at`);
+      conv.clearedAt = st[0]?.cleared_at || null;
+    } catch {
+      /* yoksa hepsi görünür */
+    }
+  }
   await loadLatest(conv, true);
 }
 
@@ -515,6 +598,28 @@ function goOffline() {
   S.db?.rpc('touch_last_seen').catch(() => {});
 }
 
+function chatMenu(conv) {
+  sheet([{ label: '🗑️  Sohbeti sil', danger: true, run: () => clearChat(conv) }]);
+}
+
+async function clearChat(conv) {
+  const ok = await confirmBox('Sohbet silinsin mi?', 'Bu sohbetteki tüm mesajlar senden silinir. Sohbet listede kalır, karşı taraftan silinmez.', 'Sil');
+  if (!ok || S.conv !== conv) return;
+  try {
+    const t = await S.db.rpc('clear_chat', { conv: conv.id, remove: false });
+    conv.clearedAt = t || new Date().toISOString();
+    conv.messages = conv.messages.filter((m) => m._tmp);
+    conv.hasMore = false;
+    paintMessages(conv);
+    const c = S.chats.find((x) => x.conversation_id === conv.id);
+    if (c) Object.assign(c, { cleared_at: conv.clearedAt, last_message_id: null, unread: 0 });
+    refreshChatsSoon();
+    toast('Sohbet silindi');
+  } catch (e) {
+    toast(friendlyError(e));
+  }
+}
+
 function leaveChat() {
   const conv = S.conv;
   S.conv = null;
@@ -529,7 +634,7 @@ function isNearBottom(sc) {
 
 async function loadLatest(conv, first = false) {
   try {
-    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&${hiddenFilter()}&select=*&order=id.desc&limit=${PAGE}`);
+    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&${hiddenFilter()}${clearedFilter(conv)}&select=*&order=id.desc&limit=${PAGE}`);
     if (S.conv !== conv) return;
     if (first) conv.hasMore = rows.length === PAGE;
     for (const r of rows) S.seenIds.add(r.id);
@@ -545,7 +650,7 @@ async function pollConversation(conv) {
   const real = conv.messages.filter((m) => !m._tmp);
   const lastId = real.length ? real[real.length - 1].id : 0;
   try {
-    const fresh = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=gt.${lastId}&${hiddenFilter()}&select=*&order=id.asc&limit=100`);
+    const fresh = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=gt.${lastId}&${hiddenFilter()}${clearedFilter(conv)}&select=*&order=id.asc&limit=100`);
     let state = [];
     if (real.length) state = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=gte.${real[0].id}&id=lte.${lastId}&select=id,read_at,deleted,body,image_path,image_w,image_h,hidden_by&limit=300`);
     if (S.conv !== conv) return;
@@ -572,7 +677,7 @@ async function loadOlder(conv) {
   const spin = conv.scroller.querySelector('.older');
   spin.classList.remove('hidden');
   try {
-    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=lt.${real[0].id}&${hiddenFilter()}&select=*&order=id.desc&limit=${PAGE}`);
+    const rows = await S.db.select('messages', `conversation_id=eq.${conv.id}&id=lt.${real[0].id}&${hiddenFilter()}${clearedFilter(conv)}&select=*&order=id.desc&limit=${PAGE}`);
     if (S.conv !== conv) return;
     conv.hasMore = rows.length === PAGE;
     for (const r of rows) S.seenIds.add(r.id);
@@ -594,6 +699,10 @@ function applyMessages(conv, rows, { stick = false } = {}) {
       const i = conv.messages.findIndex((m) => m._tmp && m._client === r._client);
       if (i >= 0) conv.messages.splice(i, 1);
     }
+  }
+  if (conv.clearedAt) {
+    const cut = Date.parse(conv.clearedAt);
+    rows = rows.filter((r) => !r.created_at || Date.parse(r.created_at) > cut || r._client);
   }
   const hiddenNow = new Set(rows.filter((r) => (r.hidden_by || []).includes(S.me.id)).map((r) => r.id));
   conv.messages = mergeMessages(conv.messages, rows.filter((r) => !hiddenNow.has(r.id))).filter((m) => !hiddenNow.has(m.id));
@@ -659,24 +768,29 @@ function bubble(conv, m) {
 
 /** Uzun basma (≈0,45 sn) ya da sağ tık */
 function longPress(el, fn) {
-  let t = null, sx = 0, sy = 0;
+  let t = null, sx = 0, sy = 0, fired = false;
   const cancel = () => { clearTimeout(t); t = null; };
   el.addEventListener('pointerdown', (e) => {
     sx = e.clientX; sy = e.clientY;
+    fired = false;
     cancel();
-    t = setTimeout(() => { t = null; navigator.vibrate?.(15); fn(); }, 450);
+    t = setTimeout(() => { t = null; fired = true; navigator.vibrate?.(15); fn(); }, 450);
   });
+  // uzun basmadan sonra parmak kalkınca oluşan tıklama, sohbeti/fotoğrafı açmasın
+  el.addEventListener('click', (e) => {
+    if (fired) { e.preventDefault(); e.stopPropagation(); fired = false; }
+  }, true);
   el.addEventListener('pointermove', (e) => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel(); });
   el.addEventListener('pointerup', cancel);
   el.addEventListener('pointercancel', cancel);
-  el.addEventListener('contextmenu', (e) => { e.preventDefault(); cancel(); fn(); });
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); if (!fired) { cancel(); fired = true; fn(); } });
 }
 
 // ---- İşlem menüsü: indir, kopyala, benden sil, herkesten sil ----
 function sheet(items) {
   const box = h('div', { class: 'overlay sheet-bg', onclick: (e) => { if (e.target === box) dismissOverlay(); } },
     h('div', { class: 'sheet', role: 'menu' },
-      ...items.map((it) => h('button', { class: `sheet-item ${it.danger ? 'danger' : ''}`, role: 'menuitem', onclick: () => { dismissOverlay(); it.run(); } }, it.label)),
+      ...items.map((it) => h('button', { class: `sheet-item ${it.danger ? 'danger' : ''}`, role: 'menuitem', onclick: () => { dismissOverlay().then(it.run); } }, it.label)),
       h('button', { class: 'sheet-item cancel', onclick: () => dismissOverlay() }, 'Vazgeç'),
     ));
   openOverlay(box);
@@ -765,13 +879,15 @@ async function ensureImageUrls(conv) {
 }
 
 function openViewer(src, m) {
-  const v = h('div', { class: 'overlay viewer', onclick: (e) => { if (e.target === v || e.target.tagName === 'IMG') dismissOverlay(); } },
+  const img = h('img', { src, alt: 'Fotoğraf' });
+  const v = h('div', { class: 'overlay viewer', onclick: (e) => { if (e.target === v && !(+img.dataset.scale > 1)) dismissOverlay(); } },
     h('div', { class: 'viewer-bar' },
       h('button', { class: 'icon-btn', 'aria-label': 'Kapat', onclick: (e) => { e.stopPropagation(); dismissOverlay(); } }, icon('close')),
       m.image_path ? h('button', { class: 'viewer-dl', onclick: () => downloadPhoto(m) }, '⬇️ Cihaza indir') : null,
     ),
-    h('img', { src, alt: 'Fotoğraf' }));
+    img);
   openOverlay(v);
+  enableZoom(img, v);
 }
 
 // ---- Gönderme ----
